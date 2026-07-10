@@ -3,6 +3,9 @@ bin/
 sources.txt
 *.class
 
+# IDE / editor workspace state (Eclipse) — local to one machine, not source.
+.metadata/
+
 # Runtime data — the live database, store config, daily backups and generated
 # files are per-install state, not source. The app recreates data/ on first run
 # (seeds the catalogue, writes default store config, bootstraps an admin login),
