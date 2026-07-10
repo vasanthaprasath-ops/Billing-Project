@@ -1,0 +1,4 @@
+refundNo,itemId,name,unit,price,taxRatePercent,quantity,amount,tax
+RFD-1001,ITM-005,Sugar 1kg,kg,48.00,5.0,1.0,48.00,2.40
+RFD-1002,ITM-005,Sugar 1kg,kg,48.00,5.0,3.0,144.00,7.20
+RFD-1003,ITM-005,Sugar 1kg,kg,48.00,5.0,1.0,48.00,2.40
