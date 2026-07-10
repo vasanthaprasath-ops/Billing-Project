@@ -1,4 +1,0 @@
-username,passwordHash,fullName,role,branchId,active,mustChangePassword
-admin,120000:sgXaTIfhkHAjTUbuJn5tQA==:SxNkKdAT3JkMCtgmUsCBDlQY+od0X8zraphQV8Obhjk=,Administrator,ADMIN,,true,false
-priya,120000:s1c5Ax0P9WKnyyXqFE6W/A==:JgIxBcfUnTSUnVRbXVzqZKSvA8ZoBdXOioFgKp08+80=,Priya Cashier,CASHIER,BR-002,true,false
-rajesh,120000:qP2HQdsnG18JoeCMFPqBdw==:DZ9y6zxczhkvHBr3nEx6MqqGrCvyDszyLm7bHfD5jMM=,Rajesh Manager,MANAGER,BR-001,true,false

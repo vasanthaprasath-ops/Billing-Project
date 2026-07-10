@@ -1,4 +1,0 @@
-refundNo,originalInvoiceNo,branchId,cashierUsername,dateTime,refundAmount,refundTax,reason
-RFD-1001,INV-1012,BR-001,admin,2026-07-09T17:54:06,50.40,2.40,Bag damaged
-RFD-1002,INV-1016,BR-001,admin,2026-07-09T20:35:48,151.20,7.20,race test
-RFD-1003,INV-1016,BR-001,admin,2026-07-09T20:36:06,50.40,2.40,final unit
