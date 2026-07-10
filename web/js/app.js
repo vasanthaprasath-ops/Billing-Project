@@ -523,14 +523,17 @@ async function loadDashboard() {
     ];
 
     // Branch bar chart: real horizontal bars with % share, replacing the plain amount list.
-    const maxBranch = Math.max(1, ...(d.branchRevenue || []).map(b => b.amount));
-    const totalBranchRevenue = (d.branchRevenue || []).reduce((s, b) => s + b.amount, 0);
+    // Normalised to one local array so every reference below is guarded the same way,
+    // instead of mixing guarded (|| []) and unguarded d.branchRevenue accesses.
+    const branchRevenue = d.branchRevenue || [];
+    const maxBranch = Math.max(1, ...branchRevenue.map(b => b.amount));
+    const totalBranchRevenue = branchRevenue.reduce((s, b) => s + b.amount, 0);
     const branchCard = d.allBranches ? `
         <div class="card">
             <div class="card-head"><div class="card-title">Sales by Branch</div>
-                <span class="mini-sub">${d.branchRevenue.length} branch${d.branchRevenue.length === 1 ? "" : "es"}</span></div>
+                <span class="mini-sub">${branchRevenue.length} branch${branchRevenue.length === 1 ? "" : "es"}</span></div>
             <div class="card-body">
-                ${d.branchRevenue.length ? d.branchRevenue.map(b => {
+                ${branchRevenue.length ? branchRevenue.map(b => {
                     const share = totalBranchRevenue > 0 ? (b.amount / totalBranchRevenue * 100) : 0;
                     return `<div class="bar-row">
                         <div class="bar-label">
@@ -560,21 +563,22 @@ async function loadDashboard() {
 
     // Payment mix: a single segmented bar - visually shows the mode split at a glance
     // (cashier/owner-relevant during the day, and reconciles against the till at close).
-    const totalPay = (d.paymentMix || []).reduce((s, p) => s + p.amount, 0);
+    const paymentMix = d.paymentMix || [];
+    const totalPay = paymentMix.reduce((s, p) => s + p.amount, 0);
     const paymentCard = `
         <div class="card">
             <div class="card-head"><div class="card-title">Payment Mix</div>
                 <span class="mini-sub">${totalPay > 0 ? money(totalPay) + " collected" : "No sales in period"}</span></div>
             <div class="card-body">
-                ${d.paymentMix.length ? `
+                ${paymentMix.length ? `
                     <div class="pay-mix-bar">
-                        ${d.paymentMix.map((p, i) => {
+                        ${paymentMix.map((p, i) => {
                             const share = totalPay > 0 ? (p.amount / totalPay * 100) : 0;
                             return `<span class="pay-seg pay-seg-${payColor(p.mode)}" style="width:${share}%" title="${esc(p.mode)}: ${money(p.amount)}"></span>`;
                         }).join("")}
                     </div>
                     <div class="pay-legend">
-                        ${d.paymentMix.map(p => {
+                        ${paymentMix.map(p => {
                             const share = totalPay > 0 ? (p.amount / totalPay * 100) : 0;
                             return `<div class="pay-legend-row">
                                 <span class="pay-dot pay-seg-${payColor(p.mode)}"></span>
@@ -588,13 +592,14 @@ async function loadDashboard() {
         </div>`;
 
     // Top items chart
-    const maxTop = Math.max(1, ...(d.topItems || []).map(t => t.amount));
+    const topItems = d.topItems || [];
+    const maxTop = Math.max(1, ...topItems.map(t => t.amount));
     const topItemsCard = `
         <div class="card">
             <div class="card-head"><div class="card-title">Top Items</div>
                 <span class="mini-sub">by revenue</span></div>
             <div class="card-body">
-                ${d.topItems.length ? d.topItems.map(t => `
+                ${topItems.length ? topItems.map(t => `
                     <div class="bar-row">
                         <div class="bar-label">
                             <span class="cat">${esc(t.name)} <span class="mini-sub">· ${fmtQty(t.quantity)} ${esc(t.unit || "")}</span></span>
