@@ -104,52 +104,91 @@ public class InventoryService {
 
     // ---------------- writes ----------------
 
-    public synchronized void add(Item item) {
-        // Assigning the auto-id here (rather than at the call site) keeps "pick the next free
-        // id" and "insert it" inside one critical section, so two concurrent creates can't both
-        // grab the same generated id.
-        if (item.getId() == null || item.getId().isEmpty()) {
-            item.setId(nextId());
-        }
-        if (findById(item.getId()) != null) {
-            throw new IllegalArgumentException("An item with id '" + item.getId() + "' already exists.");
-        }
-        // Write first; only add to the in-memory list once the row commits.
-        insert(item);
-        items.add(item);
+    /**
+     * Why this - and update/delete/cloneCatalogue below - take {@code db.inTransaction}
+     * as the OUTER lock and {@code synchronized (this)} as the inner one, instead of just
+     * declaring the method {@code synchronized} the way the read methods above do:
+     * {@link #reserveStock}/{@link #restoreStock} run nested inside checkout's/refund's own
+     * {@code db.inTransaction(...)} call, which means, for THOSE call paths, the Db lock is
+     * always acquired before the InventoryService lock. A plain {@code synchronized} method
+     * here would acquire InventoryService's lock first and reach for the Db lock second -
+     * the exact opposite order - so a product edit racing a checkout could deadlock them
+     * against each other permanently (each holding the lock the other wants). Matching the
+     * same Db-then-InventoryService order everywhere removes that second ordering entirely.
+     */
+    public void add(Item item) {
+        db.inTransaction(() -> {
+            synchronized (this) {
+                // Assigning the auto-id here (rather than at the call site) keeps "pick the next
+                // free id" and "insert it" inside one critical section, so two concurrent creates
+                // can't both grab the same generated id.
+                if (item.getId() == null || item.getId().isEmpty()) {
+                    item.setId(nextId());
+                }
+                if (findById(item.getId()) != null) {
+                    throw new IllegalArgumentException("An item with id '" + item.getId() + "' already exists.");
+                }
+                insert(item);
+                // Only add to the in-memory list once the row actually commits.
+                db.afterCommit(() -> {
+                    synchronized (this) {
+                        items.add(item);
+                    }
+                });
+            }
+        });
     }
 
-    public synchronized void update(String branchId, Item item) {
-        for (int i = 0; i < items.size(); i++) {
-            Item existing = items.get(i);
-            if (existing.getId().equalsIgnoreCase(item.getId())) {
+    public void update(String branchId, Item item) {
+        db.inTransaction(() -> {
+            synchronized (this) {
+                Item existing = findById(item.getId());
+                if (existing == null) {
+                    throw new IllegalArgumentException("No item with id '" + item.getId() + "'.");
+                }
                 if (!existing.getBranchId().equalsIgnoreCase(branchId)) {
                     throw new IllegalArgumentException("That item does not belong to this branch.");
                 }
                 updateRow(item);
-                items.set(i, item);
-                return;
+                db.afterCommit(() -> {
+                    synchronized (this) {
+                        for (int i = 0; i < items.size(); i++) {
+                            if (items.get(i).getId().equalsIgnoreCase(item.getId())) {
+                                items.set(i, item);
+                                break;
+                            }
+                        }
+                    }
+                });
             }
-        }
-        throw new IllegalArgumentException("No item with id '" + item.getId() + "'.");
+        });
     }
 
-    public synchronized void delete(String branchId, String id) {
-        Item target = null;
-        for (Item it : items) {
-            if (it.getId().equalsIgnoreCase(id) && it.getBranchId().equalsIgnoreCase(branchId)) {
-                target = it;
-                break;
+    public void delete(String branchId, String id) {
+        db.inTransaction(() -> {
+            synchronized (this) {
+                Item target = null;
+                for (Item it : items) {
+                    if (it.getId().equalsIgnoreCase(id) && it.getBranchId().equalsIgnoreCase(branchId)) {
+                        target = it;
+                        break;
+                    }
+                }
+                if (target == null) {
+                    return;
+                }
+                db.update("DELETE FROM items WHERE id=? AND branchId=?", ps -> {
+                    ps.setString(1, id);
+                    ps.setString(2, branchId);
+                });
+                final Item removed = target;
+                db.afterCommit(() -> {
+                    synchronized (this) {
+                        items.remove(removed);
+                    }
+                });
             }
-        }
-        if (target == null) {
-            return;
-        }
-        db.update("DELETE FROM items WHERE id=? AND branchId=?", ps -> {
-            ps.setString(1, id);
-            ps.setString(2, branchId);
         });
-        items.remove(target);
     }
 
     /** One line of a stock reservation request: which item, how much. */
@@ -264,23 +303,27 @@ public class InventoryService {
     }
 
     /** Duplicate every item in {@code fromBranchId} into {@code toBranchId} with fresh ids and zero stock. */
-    public synchronized List<Item> cloneCatalogue(String fromBranchId, String toBranchId) {
+    public List<Item> cloneCatalogue(String fromBranchId, String toBranchId) {
         List<Item> created = new ArrayList<>();
-        int seq = nextIdSeq();
-        for (Item src : getAll(fromBranchId)) {
-            Item copy = new Item(String.format("ITM-%03d", seq++), toBranchId, src.getName(),
-                    src.getCategory(), src.getUnit(), src.getPrice(), src.getTaxRatePercent(),
-                    0, src.getBarcode(), src.getReorderLevel());
-            created.add(copy);
-        }
-        // Persist first, mutate memory after commit - a mid-batch DB error would
-        // otherwise leave the in-memory list carrying items the DB never accepted.
         db.inTransaction(() -> {
-            for (Item copy : created) {
-                insert(copy);
+            synchronized (this) {
+                int seq = nextIdSeq();
+                for (Item src : getAll(fromBranchId)) {
+                    Item copy = new Item(String.format("ITM-%03d", seq++), toBranchId, src.getName(),
+                            src.getCategory(), src.getUnit(), src.getPrice(), src.getTaxRatePercent(),
+                            0, src.getBarcode(), src.getReorderLevel());
+                    created.add(copy);
+                    insert(copy);
+                }
+                // Persist first, mutate memory after commit - a mid-batch DB error would
+                // otherwise leave the in-memory list carrying items the DB never accepted.
+                db.afterCommit(() -> {
+                    synchronized (this) {
+                        items.addAll(created);
+                    }
+                });
             }
         });
-        items.addAll(created);
         return created;
     }
 
