@@ -1,0 +1,9 @@
+# Compiled output
+bin/
+sources.txt
+*.class
+
+# Generated at runtime (uncomment to keep these out of version control)
+# data/invoices.csv
+# data/invoice_lines.csv
+# invoices/

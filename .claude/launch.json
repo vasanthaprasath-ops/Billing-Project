@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "grocery",
+      "runtimeExecutable": "java",
+      "runtimeArgs": ["-DnoBrowser=true", "-cp", "bin;lib/*", "grocery.Main", "8090"],
+      "port": 8090
+    },
+    {
+      "name": "rpm-preview",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "8765", "--directory", "C:/Users/vasan/AppData/Local/Temp/claude/D--Sample-Project/7718716b-f2ff-4548-9dc8-37b3a0be6f47/scratchpad"],
+      "port": 8765
+    }
+  ]
+}

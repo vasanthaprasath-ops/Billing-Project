@@ -1,0 +1,3 @@
+id,name,addressLine1,addressLine2,phone,gstin,active
+BR-001,FreshMart Grocery Store,"No. 12, Market Road, T. Nagar","Chennai - 600017, Tamil Nadu",+91 98765 43210,33ABCDE1234F1Z5,true
+BR-002,FreshMart Anna Nagar,"45 2nd Avenue, Anna Nagar",,+91 98765 00002,,true

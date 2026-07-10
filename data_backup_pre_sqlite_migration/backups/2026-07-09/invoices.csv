@@ -1,0 +1,4 @@
+invoiceNo,branchId,cashierUsername,dateTime,customerName,customerPhone,paymentMode,subTotal,discount,totalTax,grandTotal
+INV-1001,BR-001,legacy,2026-06-27T23:52:39,Ramesh Kumar,+91 90000 11111,UPI,639.00,20.00,62.58,682.00
+INV-1002,BR-001,legacy,2026-07-09T14:49:25,Walk-in Customer,,Cash,559.00,0.00,23.75,583.00
+INV-1003,BR-001,legacy,2026-07-09T14:52:57,Walk-in Customer,,Cash,120.00,0.00,6.00,126.00

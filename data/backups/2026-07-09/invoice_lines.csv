@@ -1,0 +1,9 @@
+invoiceNo,itemId,name,unit,price,taxRatePercent,quantity,amount,tax
+INV-1001,ITM-001,Basmati Rice 1kg,pkt,120.00,5.0,2.0,240.00,12.00
+INV-1001,ITM-007,Amul Butter 100g,pc,58.00,12.0,3.0,174.00,20.88
+INV-1001,ITM-019,Onion 1kg,kg,40.00,0.0,1.5,60.00,0.00
+INV-1001,ITM-011,Nescafe Coffee 50g,pc,165.00,18.0,1.0,165.00,29.70
+INV-1002,ITM-002,Toor Dal 1kg,pkt,145.00,5.0,1.0,145.00,7.25
+INV-1002,ITM-003,Sunflower Oil 1L,ltr,165.00,5.0,2.0,330.00,16.50
+INV-1002,ITM-008,Milk 500ml,pkt,28.00,0.0,3.0,84.00,0.00
+INV-1003,ITM-001,Basmati Rice 1kg,pkt,120.00,5.0,1.0,120.00,6.00

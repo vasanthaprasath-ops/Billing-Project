@@ -1,0 +1,2 @@
+username,passwordHash,fullName,role,branchId,active,mustChangePassword
+admin,120000:pNhdl7W0EOlkSKg+ThYsEw==:2y/a3AbouY1iGrTdRUVspAi1U8JOHEQsAIbAqSUXDCM=,Administrator,ADMIN,,true,true
