@@ -3,7 +3,14 @@ bin/
 sources.txt
 *.class
 
-# Generated at runtime (uncomment to keep these out of version control)
-# data/invoices.csv
-# data/invoice_lines.csv
-# invoices/
+# Runtime data — the live database, store config, daily backups and generated
+# files are per-install state, not source. The app recreates data/ on first run
+# (seeds the catalogue, writes default store config, bootstraps an admin login),
+# so a fresh clone starts clean. Real invoices, customers and password hashes
+# must never live in version control — back them up via the app, not git.
+data/
+invoices/
+
+# One-off safety copy of the pre-SQLite data taken during migration (real
+# business data — never commit).
+data_backup_pre_sqlite_migration/
