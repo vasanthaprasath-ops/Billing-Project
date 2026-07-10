@@ -198,19 +198,25 @@ public class InventoryService {
             newStock.put(e.getKey(), item.getStock() - e.getValue());
         }
 
-        // Write to disk FIRST - only mutate the in-memory Item objects after the
-        // transaction commits. Doing it the other way round used to leave the JVM's
-        // stock counter decremented while a rolled-back transaction left the DB row
-        // untouched, so the very next checkout's guard would read the wrong number
-        // and could genuinely oversell.
+        // Write to disk FIRST, and apply the in-memory decrement only once the
+        // transaction actually commits (via afterCommit). This keeps the cached
+        // stock and the DB row in lockstep even when this runs nested inside a
+        // checkout's outer transaction: if a later step (invoice write, PDF gen)
+        // rolls that transaction back, the deferred update never fires and the
+        // cached number stays exactly what the DB kept - no drift, no stale guard
+        // overselling on the next sale, no restart needed to reconcile.
         db.inTransaction(() -> {
             for (Map.Entry<String, Item> e : resolved.entrySet()) {
                 writeStock(e.getValue().getId(), newStock.get(e.getKey()));
             }
+            db.afterCommit(() -> {
+                synchronized (this) {
+                    for (Map.Entry<String, Item> e : resolved.entrySet()) {
+                        e.getValue().setStock(newStock.get(e.getKey()));
+                    }
+                }
+            });
         });
-        for (Map.Entry<String, Item> e : resolved.entrySet()) {
-            e.getValue().setStock(newStock.get(e.getKey()));
-        }
         return resolved;
     }
 
@@ -240,15 +246,21 @@ public class InventoryService {
         if (newStock.isEmpty()) {
             return;
         }
-        // Same "write first, mutate memory after commit" order as reserveStock.
+        // Same "write to disk, then apply the cached bump only on commit" order as
+        // reserveStock - so a refund whose outer transaction rolls back leaves the
+        // cached stock untouched rather than crediting units the DB never recorded.
         db.inTransaction(() -> {
             for (Map.Entry<Item, Double> e : newStock.entrySet()) {
                 writeStock(e.getKey().getId(), e.getValue());
             }
+            db.afterCommit(() -> {
+                synchronized (this) {
+                    for (Map.Entry<Item, Double> e : newStock.entrySet()) {
+                        e.getKey().setStock(e.getValue());
+                    }
+                }
+            });
         });
-        for (Map.Entry<Item, Double> e : newStock.entrySet()) {
-            e.getKey().setStock(e.getValue());
-        }
     }
 
     /** Duplicate every item in {@code fromBranchId} into {@code toBranchId} with fresh ids and zero stock. */

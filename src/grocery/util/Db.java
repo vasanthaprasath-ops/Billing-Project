@@ -34,6 +34,14 @@ public final class Db {
      * NOT commit/rollback themselves - the outermost frame owns the boundary.
      */
     private int transactionDepth;
+    /**
+     * Actions queued via {@link #afterCommit} while a transaction is in flight.
+     * They run (in order) only if the OUTERMOST transaction commits, and are
+     * discarded on rollback - so an in-memory cache update deferred here mirrors
+     * a committed DB write exactly, and never lingers after a rolled-back one.
+     * Guarded by the same monitor as every other Db method.
+     */
+    private final List<Runnable> afterCommitActions = new ArrayList<>();
 
     private Db(Connection conn, File dbFile) {
         this.conn = conn;
@@ -248,12 +256,14 @@ public final class Db {
             }
             return;
         }
+        boolean committed = false;
         try {
             conn.setAutoCommit(false);
             transactionDepth = 1;
             try {
                 body.run();
                 conn.commit();
+                committed = true;
             } catch (RuntimeException e) {
                 conn.rollback();
                 throw e;
@@ -263,6 +273,44 @@ public final class Db {
             }
         } catch (SQLException e) {
             throw new RuntimeException("Transaction failed: " + e.getMessage(), e);
+        } finally {
+            fireAfterCommit(committed);
+        }
+    }
+
+    /**
+     * Register an action to run once the OUTERMOST transaction commits. If called
+     * outside any transaction the action runs immediately (the write is already
+     * durable). If the transaction rolls back, the action is discarded and never
+     * runs. Use this for an in-memory cache update that must mirror a committed DB
+     * write - deferring it past commit is what keeps the cache and the DB in
+     * lockstep even when the enclosing transaction is a nested checkout/refund
+     * that rolls back after the cache would otherwise have been mutated.
+     */
+    public synchronized void afterCommit(Runnable action) {
+        if (transactionDepth == 0) {
+            action.run();
+        } else {
+            afterCommitActions.add(action);
+        }
+    }
+
+    /** Runs queued after-commit hooks if we committed, else drops them. Always clears the queue. */
+    private void fireAfterCommit(boolean committed) {
+        if (afterCommitActions.isEmpty()) {
+            return;
+        }
+        List<Runnable> pending = new ArrayList<>(afterCommitActions);
+        afterCommitActions.clear();
+        if (!committed) {
+            return; // rolled back - the cache was never touched, so there is nothing to apply
+        }
+        for (Runnable action : pending) {
+            try {
+                action.run();
+            } catch (RuntimeException e) {
+                Log.warn("after-commit hook failed: " + e.getMessage(), e);
+            }
         }
     }
 
