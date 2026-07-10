@@ -761,7 +761,18 @@ tr.tbl-group-row td {
     .brand { padding: 0 12px 0 4px; }
     .nav { flex-direction: row; margin: 0; }
     .nav-item { white-space: nowrap; padding: 9px 12px; }
-    .sidebar-footer, .sidebar-spacer, .user-box, .sidebar-actions { display: none; }
+    .sidebar-footer, .sidebar-spacer, .user-box { display: none; }
+    /* Log Out / Change Password must stay reachable at every width - kept visible
+       (not hidden like the rest of the sidebar chrome above) and laid out inline
+       in the same scrollable row as the nav, instead of stacked in a column. */
+    .sidebar-actions {
+        flex-direction: row;
+        width: auto;
+        padding: 0;
+        margin-left: 8px;
+        flex-shrink: 0;
+    }
+    .sidebar-actions .btn { white-space: nowrap; padding: 9px 12px; }
     .stat-grid { grid-template-columns: 1fr; }
     .content { padding: 16px; }
     .branch-switcher { max-width: 140px; }

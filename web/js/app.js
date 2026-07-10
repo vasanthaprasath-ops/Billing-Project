@@ -32,8 +32,17 @@ async function handle(res) {
     const ct = res.headers.get("content-type") || "";
     const data = ct.includes("json") ? await res.json() : await res.text();
     if (res.status === 401) {
+        // Only an already-signed-in session bouncing to a 401 counts as an
+        // "expired" surprise worth explaining - a fresh visit with no cookie yet,
+        // or a wrong-password attempt on the login form itself, both also land
+        // here with session already null, and should just show the server's own
+        // message (handled by the generic throw below) instead of this one.
+        const wasSignedIn = !!session;
         session = null;
         showLogin();
+        if (wasSignedIn) {
+            throw new Error("Your session has expired. Please sign in again.");
+        }
     }
     if (!res.ok) throw new Error((data && data.error) || ("Request failed (" + res.status + ")"));
     return data;
@@ -119,10 +128,13 @@ function toast(msg, type = "info") {
     }, 3200);
 }
 
+let modalLastFocused = null;
+
 function openModal(html, opts) {
     opts = opts || {};
+    modalLastFocused = document.activeElement;
     const root = document.getElementById("modalRoot");
-    root.innerHTML = `<div class="modal-overlay" role="dialog" aria-modal="true">${html}</div>`;
+    root.innerHTML = `<div class="modal-overlay" role="dialog" aria-modal="true" tabindex="-1">${html}</div>`;
     const overlay = root.querySelector(".modal-overlay");
     // Buttons default to type="submit"; inside these modals there is no <form>
     // owner, but making that explicit prevents accidental form-submit if a
@@ -141,11 +153,107 @@ function openModal(html, opts) {
         overlay.addEventListener("click", e => { if (e.target === overlay) closeModal(); });
         document.addEventListener("keydown", escClose);
     }
+    document.addEventListener("keydown", modalTrapFocus);
+    // Hide the rest of the app from assistive tech while the dialog is open - it's a
+    // sibling of #modalRoot, not an ancestor, so this can't trap focus inside itself.
+    document.getElementById("appRoot").setAttribute("aria-hidden", "true");
+    document.getElementById("loginScreen").setAttribute("aria-hidden", "true");
+    // Initial focus: prefer the first focusable field inside the body (so data-entry
+    // modals let you start typing immediately), else the first footer button (so
+    // confirm dialogs default to Cancel, since it's first in the DOM), else the dialog itself.
+    const target = modalFocusable(overlay.querySelector(".modal-body"))[0]
+        || modalFocusable(overlay.querySelector(".modal-foot"))[0]
+        || overlay;
+    target.focus();
 }
+
+function modalFocusable(container) {
+    if (!container) return [];
+    return Array.from(container.querySelectorAll(
+        'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    ));
+}
+
+function modalTrapFocus(e) {
+    if (e.key !== "Tab") return;
+    const overlay = document.querySelector("#modalRoot .modal-overlay");
+    if (!overlay) return;
+    const focusable = modalFocusable(overlay);
+    if (!focusable.length) { e.preventDefault(); return; }
+    const first = focusable[0], last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault(); last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault(); first.focus();
+    }
+}
+
 function escClose(e) { if (e.key === "Escape") closeModal(); }
 function closeModal() {
     document.getElementById("modalRoot").innerHTML = "";
     document.removeEventListener("keydown", escClose);
+    document.removeEventListener("keydown", modalTrapFocus);
+    document.getElementById("appRoot").removeAttribute("aria-hidden");
+    document.getElementById("loginScreen").removeAttribute("aria-hidden");
+    if (modalLastFocused && document.contains(modalLastFocused)) {
+        modalLastFocused.focus();
+    }
+    modalLastFocused = null;
+}
+
+/**
+ * Disables btn and swaps its label to busyLabel for the duration of fn(), so a
+ * slow request or an impatient double-click can't fire the same submit twice.
+ * Always restores the button afterwards - harmless even if the caller is
+ * about to remove it anyway (e.g. by closing the modal on success).
+ */
+async function withBusy(btn, busyLabel, fn) {
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = busyLabel;
+    try {
+        await fn();
+    } finally {
+        btn.disabled = false;
+        btn.textContent = original;
+    }
+}
+
+/**
+ * Generic "are you sure?" dialog for destructive / hard-to-undo actions.
+ * While onConfirm's promise is pending, both buttons are disabled and the
+ * confirm button shows busyLabel, so an impatient second click (or a slow
+ * network) can't fire the same request twice. onConfirm is responsible for
+ * closing the modal and toasting its own result on success; on failure it
+ * should throw so the dialog re-enables for a retry instead of looking stuck.
+ */
+function confirmAction({ title, message, confirmLabel = "Confirm", busyLabel = "Working…", danger = true, onConfirm }) {
+    openModal(`
+        <div class="modal" style="max-width:380px">
+            <div class="modal-head"><h3>${esc(title)}</h3><button class="modal-close" id="cxClose">×</button></div>
+            <div class="modal-body"><p class="mini-sub" style="margin:0">${message}</p></div>
+            <div class="modal-foot">
+                <button class="btn" id="cxCancel">Cancel</button>
+                <button class="btn ${danger ? "btn-danger" : "btn-primary"}" id="cxOk">${esc(confirmLabel)}</button>
+            </div>
+        </div>`);
+    document.getElementById("cxClose").onclick = closeModal;
+    document.getElementById("cxCancel").onclick = closeModal;
+    document.getElementById("cxOk").onclick = async () => {
+        const okBtn = document.getElementById("cxOk");
+        const cancelBtn = document.getElementById("cxCancel");
+        const original = okBtn.textContent;
+        okBtn.disabled = true;
+        cancelBtn.disabled = true;
+        okBtn.textContent = busyLabel;
+        try {
+            await onConfirm();
+        } catch (e) {
+            okBtn.disabled = false;
+            cancelBtn.disabled = false;
+            okBtn.textContent = original;
+        }
+    };
 }
 
 /* ============================================================
@@ -200,6 +308,19 @@ async function doLogout() {
     showLogin();
 }
 
+function confirmLogout() {
+    const n = cart.length;
+    confirmAction({
+        title: "Log out?",
+        message: n > 0
+            ? `You have <b>${n}</b> item${n === 1 ? "" : "s"} in the current bill that ${n === 1 ? "hasn't" : "haven't"} been checked out. Logging out will discard ${n === 1 ? "it" : "them"}.`
+            : "You'll need to sign in again to continue.",
+        confirmLabel: "Log Out",
+        busyLabel: "Logging out…",
+        onConfirm: async () => { await doLogout(); closeModal(); }
+    });
+}
+
 function openChangePasswordModal(forced) {
     openModal(`
         <div class="modal" style="max-width:380px">
@@ -208,10 +329,10 @@ function openChangePasswordModal(forced) {
             <div class="modal-body">
                 ${forced
                     ? `<p class="mini-sub" style="margin:0 0 14px">This is a new account — choose a password only you know.</p>`
-                    : `<div class="field"><label>Current Password</label><input class="input" id="cpCurrent" type="password"></div>`}
-                <div class="field"><label>New Password</label>
+                    : `<div class="field"><label for="cpCurrent">Current Password</label><input class="input" id="cpCurrent" type="password"></div>`}
+                <div class="field"><label for="cpNew">New Password</label>
                     <input class="input" id="cpNew" type="password" placeholder="At least 6 characters"></div>
-                <div class="field"><label>Confirm New Password</label><input class="input" id="cpConfirm" type="password"></div>
+                <div class="field"><label for="cpConfirm">Confirm New Password</label><input class="input" id="cpConfirm" type="password"></div>
             </div>
             <div class="modal-foot">
                 ${forced ? "" : `<button class="btn" id="mCancel">Cancel</button>`}
@@ -222,7 +343,7 @@ function openChangePasswordModal(forced) {
         document.getElementById("mClose").onclick = closeModal;
         document.getElementById("mCancel").onclick = closeModal;
     }
-    document.getElementById("mSave").onclick = async () => {
+    document.getElementById("mSave").onclick = () => withBusy(document.getElementById("mSave"), "Saving…", async () => {
         const newPassword = document.getElementById("cpNew").value;
         const confirmValue = document.getElementById("cpConfirm").value;
         if (newPassword.length < 6) { toast("New password must be at least 6 characters", "error"); return; }
@@ -235,7 +356,7 @@ function openChangePasswordModal(forced) {
             renderUserBox();
             toast("Password updated", "success");
         } catch (e) { toast(e.message, "error"); }
-    };
+    });
 }
 
 /* ---------------- role / branch scoping ---------------- */
@@ -522,16 +643,16 @@ function renderBilling() {
                 <div class="card-body">
                     <div class="cart-lines" id="cartLines"></div>
                     <div id="cartForm">
-                        <div class="field"><label>Customer Name</label>
+                        <div class="field"><label for="custName">Customer Name</label>
                             <input class="input" id="custName" placeholder="Walk-in Customer"></div>
                         <div class="field-row">
-                            <div class="field"><label>Phone</label><input class="input" id="custPhone" placeholder="Optional"></div>
-                            <div class="field"><label>Payment</label>
+                            <div class="field"><label for="custPhone">Phone</label><input class="input" id="custPhone" placeholder="Optional"></div>
+                            <div class="field"><label for="payMode">Payment</label>
                                 <select class="input" id="payMode"><option>Cash</option><option>Card</option><option>UPI</option></select></div>
                         </div>
-                        <div class="field"><label>Discount (${esc(store.currency)})</label>
+                        <div class="field"><label for="discount">Discount (${esc(store.currency)})</label>
                             <input class="input" id="discount" type="number" min="0" step="0.01" value="0"></div>
-                        <div class="field" id="cashPaidField"><label>Cash Tendered (${esc(store.currency)})</label>
+                        <div class="field" id="cashPaidField"><label for="cashPaid">Cash Tendered (${esc(store.currency)})</label>
                             <input class="input" id="cashPaid" type="number" min="0" step="0.01" placeholder="Amount handed over by customer"></div>
                     </div>
                     <div class="totals" id="cartTotals"></div>
@@ -541,7 +662,7 @@ function renderBilling() {
         </div>`;
 
     document.getElementById("posSearch").addEventListener("input", e => renderProductGrid(e.target.value));
-    document.getElementById("clearCartBtn").addEventListener("click", () => { cart = []; renderCart(); });
+    document.getElementById("clearCartBtn").addEventListener("click", confirmClearCart);
     document.getElementById("discount").addEventListener("input", renderTotals);
     document.getElementById("cashPaid").addEventListener("input", renderTotals);
     document.getElementById("payMode").addEventListener("change", renderTotals);
@@ -617,6 +738,18 @@ function addToCart(id) {
     if (line) line.qty += 1;
     else cart.push({ id: it.id, name: it.name, unit: it.unit, price: it.price, taxRatePercent: it.taxRatePercent, stock: it.stock, qty: 1 });
     renderCart();
+}
+
+function confirmClearCart() {
+    if (!cart.length) return;
+    const n = cart.length;
+    confirmAction({
+        title: "Clear cart?",
+        message: `Remove all <b>${n}</b> item${n === 1 ? "" : "s"} from the current bill? This cannot be undone.`,
+        confirmLabel: "Clear Cart",
+        busyLabel: "Clearing…",
+        onConfirm: async () => { cart = []; renderCart(); closeModal(); }
+    });
 }
 
 function stepCart(i, act) {
@@ -871,29 +1004,29 @@ function openProductModal(item) {
             <div class="modal-head"><h3>${editing ? "Edit" : "Add"} Product</h3>
                 <button class="modal-close" id="mClose">×</button></div>
             <div class="modal-body">
-                <div class="field"><label>Item ID</label>
+                <div class="field"><label for="fId">Item ID</label>
                     <input class="input" id="fId" ${editing ? "disabled" : ""} value="${editing ? esc(item.id) : ""}" placeholder="Auto-generated if left blank"></div>
-                <div class="field"><label>Name *</label>
+                <div class="field"><label for="fName">Name *</label>
                     <input class="input" id="fName" value="${editing ? esc(item.name) : ""}" placeholder="e.g. Basmati Rice 1kg"></div>
                 <div class="field-row">
-                    <div class="field"><label>Category</label>
+                    <div class="field"><label for="fCat">Category</label>
                         <input class="input" id="fCat" value="${editing ? esc(item.category) : "General"}"></div>
-                    <div class="field"><label>Unit</label>
+                    <div class="field"><label for="fUnit">Unit</label>
                         <select class="input" id="fUnit">${units.map(u => `<option ${editing && item.unit === u ? "selected" : ""}>${u}</option>`).join("")}</select></div>
                 </div>
                 <div class="field-row">
-                    <div class="field"><label>Price (${esc(store.currency)})</label>
+                    <div class="field"><label for="fPrice">Price (${esc(store.currency)})</label>
                         <input class="input" id="fPrice" type="number" min="0" step="0.01" value="${editing ? item.price : "0"}"></div>
-                    <div class="field"><label>GST %</label>
+                    <div class="field"><label for="fTax">GST %</label>
                         <select class="input" id="fTax">${taxes.map(t => `<option ${editing && item.taxRatePercent === t ? "selected" : ""}>${t}</option>`).join("")}</select></div>
                 </div>
                 <div class="field-row">
-                    <div class="field"><label>Stock</label>
+                    <div class="field"><label for="fStock">Stock</label>
                         <input class="input" id="fStock" type="number" min="0" step="1" value="${editing ? fmtQty(item.stock) : "0"}"></div>
-                    <div class="field"><label>Reorder Alert At</label>
+                    <div class="field"><label for="fReorder">Reorder Alert At</label>
                         <input class="input" id="fReorder" type="number" min="0" step="1" value="${editing ? fmtQty(item.reorderLevel) : "10"}"></div>
                 </div>
-                <div class="field"><label>Barcode <span class="mini-sub">(scan with a USB scanner, or type it)</span></label>
+                <div class="field"><label for="fBarcode">Barcode <span class="mini-sub">(scan with a USB scanner, or type it)</span></label>
                     <input class="input" id="fBarcode" value="${editing ? esc(item.barcode || "") : ""}" placeholder="Optional"></div>
             </div>
             <div class="modal-foot">
@@ -903,7 +1036,8 @@ function openProductModal(item) {
         </div>`);
     document.getElementById("mClose").onclick = closeModal;
     document.getElementById("mCancel").onclick = closeModal;
-    document.getElementById("mSave").onclick = () => saveProduct(editing, editing ? item.id : null);
+    document.getElementById("mSave").onclick = () => withBusy(document.getElementById("mSave"),
+        editing ? "Saving…" : "Adding…", () => saveProduct(editing, editing ? item.id : null));
     document.getElementById("fBarcode").addEventListener("keydown", e => {
         if (e.key === "Enter") { e.preventDefault(); document.getElementById("mSave").click(); }
     });
@@ -917,10 +1051,10 @@ async function saveProduct(editing, id) {
         name: document.getElementById("fName").value.trim(),
         category: document.getElementById("fCat").value.trim(),
         unit: document.getElementById("fUnit").value,
-        price: parseFloat(document.getElementById("fPrice").value) || 0,
-        taxRatePercent: parseFloat(document.getElementById("fTax").value) || 0,
-        stock: parseFloat(document.getElementById("fStock").value) || 0,
-        reorderLevel: parseFloat(document.getElementById("fReorder").value) || 0,
+        price: Math.max(0, parseFloat(document.getElementById("fPrice").value) || 0),
+        taxRatePercent: Math.max(0, parseFloat(document.getElementById("fTax").value) || 0),
+        stock: Math.max(0, parseFloat(document.getElementById("fStock").value) || 0),
+        reorderLevel: Math.max(0, parseFloat(document.getElementById("fReorder").value) || 0),
         barcode: document.getElementById("fBarcode").value.trim()
     };
     if (!dto.name) { toast("Product name is required", "error"); return; }
@@ -937,26 +1071,19 @@ async function saveProduct(editing, id) {
 function confirmDeleteProduct(id) {
     const it = items.find(x => x.id === id);
     if (!it) return;
-    openModal(`
-        <div class="modal" style="max-width:380px">
-            <div class="modal-head"><h3>Delete product?</h3><button class="modal-close" id="dClose">×</button></div>
-            <div class="modal-body"><p class="mini-sub" style="margin:0">Delete <b>${esc(it.name)}</b> (${esc(it.id)})? This cannot be undone.</p></div>
-            <div class="modal-foot">
-                <button class="btn" id="dCancel">Cancel</button>
-                <button class="btn btn-danger" id="dOk">Delete</button>
-            </div>
-        </div>`);
-    document.getElementById("dClose").onclick = closeModal;
-    document.getElementById("dCancel").onclick = closeModal;
-    document.getElementById("dOk").onclick = async () => {
-        try {
+    confirmAction({
+        title: "Delete product?",
+        message: `Delete <b>${esc(it.name)}</b> (${esc(it.id)})? This cannot be undone.`,
+        confirmLabel: "Delete",
+        busyLabel: "Deleting…",
+        onConfirm: async () => {
             await api.del("/api/items/" + encodeURIComponent(id) + buildQuery({ branchId: adminBranchParam() }));
             closeModal();
             toast("Product deleted", "success");
             await loadItems();
             refreshCurrentView();
-        } catch (e) { toast(e.message, "error"); }
-    };
+        }
+    });
 }
 
 /* ============================================================
@@ -1109,7 +1236,7 @@ async function openReturnModal(invoiceNo) {
                     <thead><tr><th>Item</th><th class="num">Sold</th><th class="num">Refunded</th><th class="num">Left</th><th class="num">Return Qty</th></tr></thead>
                     <tbody>${rows}</tbody>
                 </table></div>
-                <div class="field" style="margin-top:14px"><label>Reason (optional)</label>
+                <div class="field" style="margin-top:14px"><label for="rfReason">Reason (optional)</label>
                     <input class="input" id="rfReason" placeholder="e.g. Damaged pack, wrong item, changed mind"></div>
                 <div class="totals" style="margin-top:14px">
                     <div class="total-row grand"><span>Refund Total</span><span id="rfTotal">${money(0)}</span></div>
@@ -1137,7 +1264,7 @@ async function openReturnModal(invoiceNo) {
     inputs.forEach(inp => inp.addEventListener("input", recompute));
     document.getElementById("mClose").onclick = closeModal;
     document.getElementById("mCancel").onclick = closeModal;
-    saveBtn.onclick = async () => {
+    saveBtn.onclick = () => withBusy(saveBtn, "Processing…", async () => {
         const body = {
             originalInvoiceNo: inv.invoiceNo,
             reason: document.getElementById("rfReason").value.trim(),
@@ -1152,7 +1279,7 @@ async function openReturnModal(invoiceNo) {
             toast(`Refund ${r.refundNo} processed — ${money(r.refundAmount)}`, "success");
             loadInvoices();
         } catch (e) { toast(e.message, "error"); }
-    };
+    });
 }
 
 /* ============================================================
@@ -1208,20 +1335,20 @@ function openBranchModal(branch, allBranches) {
         <div class="modal">
             <div class="modal-head"><h3>${editing ? "Edit" : "Add"} Branch</h3><button class="modal-close" id="mClose">×</button></div>
             <div class="modal-body">
-                <div class="field"><label>Name *</label><input class="input" id="fbName" value="${editing ? esc(branch.name) : ""}"></div>
-                <div class="field"><label>Address Line 1</label><input class="input" id="fbAddr1" value="${editing ? esc(branch.addressLine1) : ""}"></div>
-                <div class="field"><label>Address Line 2</label><input class="input" id="fbAddr2" value="${editing ? esc(branch.addressLine2) : ""}"></div>
+                <div class="field"><label for="fbName">Name *</label><input class="input" id="fbName" value="${editing ? esc(branch.name) : ""}"></div>
+                <div class="field"><label for="fbAddr1">Address Line 1</label><input class="input" id="fbAddr1" value="${editing ? esc(branch.addressLine1) : ""}"></div>
+                <div class="field"><label for="fbAddr2">Address Line 2</label><input class="input" id="fbAddr2" value="${editing ? esc(branch.addressLine2) : ""}"></div>
                 <div class="field-row">
-                    <div class="field"><label>Phone</label><input class="input" id="fbPhone" value="${editing ? esc(branch.phone) : ""}"></div>
-                    <div class="field"><label>GSTIN</label><input class="input" id="fbGstin" value="${editing ? esc(branch.gstin) : ""}"></div>
+                    <div class="field"><label for="fbPhone">Phone</label><input class="input" id="fbPhone" value="${editing ? esc(branch.phone) : ""}"></div>
+                    <div class="field"><label for="fbGstin">GSTIN</label><input class="input" id="fbGstin" value="${editing ? esc(branch.gstin) : ""}"></div>
                 </div>
                 ${editing
-                    ? `<div class="field"><label>Status</label>
+                    ? `<div class="field"><label for="fbActive">Status</label>
                         <select class="input" id="fbActive">
                             <option value="true" ${branch.active ? "selected" : ""}>Active</option>
                             <option value="false" ${!branch.active ? "selected" : ""}>Inactive</option>
                         </select></div>`
-                    : `<div class="field"><label>Starting catalogue</label>
+                    : `<div class="field"><label for="fbClone">Starting catalogue</label>
                         <select class="input" id="fbClone">
                             <option value="">Start empty</option>
                             ${allBranches.map(b => `<option value="${esc(b.id)}">Copy products from ${esc(b.name)}</option>`).join("")}
@@ -1234,7 +1361,7 @@ function openBranchModal(branch, allBranches) {
         </div>`);
     document.getElementById("mClose").onclick = closeModal;
     document.getElementById("mCancel").onclick = closeModal;
-    document.getElementById("mSave").onclick = async () => {
+    document.getElementById("mSave").onclick = () => withBusy(document.getElementById("mSave"), "Saving…", async () => {
         const dto = {
             name: document.getElementById("fbName").value.trim(),
             addressLine1: document.getElementById("fbAddr1").value.trim(),
@@ -1257,7 +1384,7 @@ function openBranchModal(branch, allBranches) {
             setupBranchSwitcher();
             renderAdminTab("branches");
         } catch (e) { toast(e.message, "error"); }
-    };
+    });
 }
 
 async function renderUsersTab(body) {
@@ -1291,21 +1418,21 @@ function openUserModal(user) {
         <div class="modal">
             <div class="modal-head"><h3>${editing ? "Edit" : "Add"} User</h3><button class="modal-close" id="mClose">×</button></div>
             <div class="modal-body">
-                <div class="field"><label>Username *</label>
+                <div class="field"><label for="fuUsername">Username *</label>
                     <input class="input" id="fuUsername" ${editing ? "disabled" : ""} value="${editing ? esc(user.username) : ""}"></div>
-                <div class="field"><label>Full Name</label><input class="input" id="fuFullName" value="${editing ? esc(user.fullName) : ""}"></div>
+                <div class="field"><label for="fuFullName">Full Name</label><input class="input" id="fuFullName" value="${editing ? esc(user.fullName) : ""}"></div>
                 <div class="field-row">
-                    <div class="field"><label>Role</label>
+                    <div class="field"><label for="fuRole">Role</label>
                         <select class="input" id="fuRole">${roles.map(r => `<option ${editing && user.role === r ? "selected" : ""}>${r}</option>`).join("")}</select></div>
-                    <div class="field"><label>Branch <span class="mini-sub">(not needed for Admin)</span></label>
+                    <div class="field"><label for="fuBranch">Branch <span class="mini-sub">(not needed for Admin)</span></label>
                         <select class="input" id="fuBranch">
                             <option value="">—</option>
                             ${branches.map(b => `<option value="${esc(b.id)}" ${editing && user.branchId === b.id ? "selected" : ""}>${esc(b.name)}</option>`).join("")}
                         </select></div>
                 </div>
-                <div class="field"><label>${editing ? "Reset Password" : "Password *"}</label>
+                <div class="field"><label for="fuPassword">${editing ? "Reset Password" : "Password *"}</label>
                     <input class="input" id="fuPassword" type="password" placeholder="${editing ? "Leave blank to keep current password" : "At least 6 characters"}"></div>
-                ${editing ? `<div class="field"><label>Status</label>
+                ${editing ? `<div class="field"><label for="fuActive">Status</label>
                     <select class="input" id="fuActive">
                         <option value="true" ${user.active ? "selected" : ""}>Active</option>
                         <option value="false" ${!user.active ? "selected" : ""}>Inactive</option>
@@ -1318,7 +1445,7 @@ function openUserModal(user) {
         </div>`);
     document.getElementById("mClose").onclick = closeModal;
     document.getElementById("mCancel").onclick = closeModal;
-    document.getElementById("mSave").onclick = async () => {
+    document.getElementById("mSave").onclick = () => withBusy(document.getElementById("mSave"), "Saving…", async () => {
         const dto = {
             username: editing ? user.username : document.getElementById("fuUsername").value.trim(),
             fullName: document.getElementById("fuFullName").value.trim(),
@@ -1336,7 +1463,7 @@ function openUserModal(user) {
             toast("User saved", "success");
             renderAdminTab("users");
         } catch (e) { toast(e.message, "error"); }
-    };
+    });
 }
 
 async function renderAuditTab(body) {
@@ -1369,9 +1496,9 @@ async function renderZReportTab(body) {
     const savedDate = body.dataset.zdate || today;
     body.innerHTML = `
         <div class="toolbar no-print">
-            <div class="field" style="max-width:180px;margin:0"><label>Date</label>
+            <div class="field" style="max-width:180px;margin:0"><label for="zDate">Date</label>
                 <input class="input" id="zDate" type="date" value="${esc(savedDate)}" max="${today}"></div>
-            <div class="field" style="max-width:220px;margin:0"><label>Branch</label>
+            <div class="field" style="max-width:220px;margin:0"><label for="zBranch">Branch</label>
                 <select class="input" id="zBranch"></select></div>
             <div class="spacer"></div>
             <button class="btn" id="zPrint">🖨️ Print</button>
@@ -1532,8 +1659,18 @@ async function init() {
     document.querySelectorAll(".nav-item").forEach(b =>
         b.addEventListener("click", () => switchView(b.dataset.view)));
     document.getElementById("loginForm").addEventListener("submit", doLogin);
-    document.getElementById("logoutBtn").addEventListener("click", doLogout);
+    document.getElementById("logoutBtn").addEventListener("click", confirmLogout);
     document.getElementById("changePasswordBtn").addEventListener("click", () => openChangePasswordModal(false));
+    // An in-progress bill lives only in memory - warn before an accidental tab close
+    // or refresh silently throws it away. Most browsers show their own generic text
+    // instead of e.returnValue, but triggering the native prompt at all is the part
+    // that matters here.
+    window.addEventListener("beforeunload", e => {
+        if (cart.length > 0) {
+            e.preventDefault();
+            e.returnValue = "";
+        }
+    });
     startClock();
 
     try {
