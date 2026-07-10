@@ -4,16 +4,18 @@ A complete, ready-to-run **multi-branch grocery store point-of-sale & billing we
 application**, with sign-in, roles, barcode scanning, thermal receipts and an audit trail —
 built for more than one till.
 
-- **Backend:** pure **Java (JDK 17)** using the JDK's built-in HTTP server, with a single
-  vendored library (**Gson**, in `lib/`) for JSON. Includes a **hand-written PDF engine**
-  that produces real tax-invoice PDFs — no iText/PDFBox needed. Password hashing, session
-  cookies and zip backups all use the JDK's own `javax.crypto` / `java.util.zip` — no new
-  dependencies were added for any of this.
+- **Backend:** pure **Java (JDK 17)** using the JDK's built-in HTTP server, with two
+  vendored libraries in `lib/` — **Gson** for JSON and **sqlite-jdbc** for the embedded
+  database. Includes a **hand-written PDF engine** that produces real tax-invoice PDFs —
+  no iText/PDFBox needed. Password hashing, session cookies and zip backups all use the
+  JDK's own `javax.crypto` / `java.util.zip` — no new dependencies were added for any of
+  this.
 - **Frontend:** an interactive single-page web UI (HTML / CSS / vanilla JavaScript) — no
   framework, no build step, nothing loaded from the internet at runtime.
-- **Storage:** human-readable CSV files under `data/` — no database server. Every write is
-  now crash-safe (write-to-temp-then-rename) and checkout is fully atomic, so two tills
-  ringing up the same item at the same moment can never oversell it or collide on an
+- **Storage:** an embedded **SQLite** database (`data/freshmart.db`) — no separate database
+  server to install, configure or run. Every write goes through a real transaction, and
+  checkout / refunds are fully atomic, so two tills ringing up the same item (or refunding
+  the same bill) at the same moment can never oversell it, over-refund it, or collide on an
   invoice number.
 
 You run one command, your browser opens, and you have a working store — or a working
@@ -56,7 +58,11 @@ chain of stores.
   can never both succeed if there isn't enough stock for both.
 - Per-item reorder threshold drives the dashboard's low-stock alerts (a case of rice and a
   pack of chewing gum don't need the same "running low" line).
-- Ships with 23 realistic sample grocery products per branch.
+- Product list is grouped by category (aisle-style) for easy scanning, with a **Low stock
+  only** checkbox that instantly narrows it to items at/below their reorder level — either
+  right there on the Products screen, or via the Dashboard's low-stock shortcut.
+- Ships with 48 realistic sample grocery products for the first branch (further branches
+  can clone an existing branch's catalogue instead of starting empty).
 
 ### 📁 Invoices
 - Browse every past sale, search by invoice number, customer or cashier, and reopen the
@@ -98,9 +104,10 @@ chain of stores.
   page the accountant can file.
 - **Audit Log** — an append-only trail of logins, price changes, stock edits, checkouts,
   user/branch changes and backups: who did what, and when.
-- **Backup** — download a zip of every CSV in `data/` on demand. The app also takes its own
-  dated copy under `data/backups/` once a day automatically, since these CSV files are the
-  entire database.
+- **Backup** — download a zip of the database on demand. The app also takes its own dated
+  snapshot under `data/backups/` once a day automatically. Both use SQLite's own
+  `VACUUM INTO`, so a backup is always a single, consistent, fully-written copy — never a
+  half-saved file, even if it runs while someone's mid-checkout.
 
 ### 🔒 Correct & safe by design
 - All money uses `BigDecimal` (never floating point) so totals are always exact.
@@ -121,7 +128,8 @@ chain of stores.
 - **JDK 17 or newer** (`java` and `javac` on your `PATH`). Check with `java -version`.
 - A web browser.
 
-No Maven/Gradle, no internet at runtime, no database. The one dependency (Gson) is already
+No Maven/Gradle, no internet at runtime, no database server to install — SQLite runs
+embedded inside the app itself. Both dependencies (Gson and the SQLite driver) are already
 bundled in `lib/`.
 
 ---
@@ -176,9 +184,10 @@ To stop the server, press **Ctrl+C** in its terminal window.
    the A4 invoice and the thermal receipt are available from the confirmation screen.
 4. **Products** — manage your real catalogue and stock (Add / Edit / Delete). Hidden for
    Cashier accounts.
-5. **Invoices** — find and reprint any past bill, in either PDF format.
-6. **Admin** (Admin accounts only) — manage branches, users, review the audit log, and
-   download a backup.
+5. **Invoices** — find and reprint any past bill in either PDF format, or open **↩ Return**
+   on one to process a refund against it.
+6. **Admin** (Admin accounts only) — manage branches, users, review the audit log, run the
+   day-end Z-report, and download a backup.
 
 ---
 
@@ -222,7 +231,7 @@ accounts, who are always scoped to their own branch.
 | POST   | `/api/users`                   | Add a user (Admin)                                 |
 | PUT    | `/api/users/{username}`        | Update a user / reset password (Admin)             |
 | GET    | `/api/audit-log`               | Recent audit trail (Admin)                         |
-| GET    | `/api/admin/backup`            | Download a zip of `data/` (Admin)                  |
+| GET    | `/api/admin/backup`            | Download a zip of the database + store config (Admin) |
 | GET    | `/api/dashboard?from=&to=`     | Dashboard stats & analytics (sales scoped to the optional `yyyy-MM-dd` date window) |
 | GET    | `/api/reports/z?date=&branchId=` | Day-end Z-report for the given date (totals, GST split, payment breakdown, top items) |
 | GET    | `/api/items?q=&barcode=`       | List / search products, or look up one by barcode/SKU |
@@ -243,28 +252,25 @@ accounts, who are always scoped to their own branch.
 
 ## Where data is stored
 
-| Path                       | Contents                                          |
-|-----------------------------|----------------------------------------------------|
-| `data/store.properties`    | Store details                                      |
-| `data/branches.csv`        | Branches                                           |
-| `data/users.csv`           | User accounts (password hashes, never plaintext)   |
-| `data/items.csv`           | Product catalogue and stock levels, per branch     |
-| `data/invoices.csv`        | One row per completed invoice (header/totals)      |
-| `data/invoice_lines.csv`   | One row per billed line item                       |
-| `data/refunds.csv`         | One row per refund (header/totals)                 |
-| `data/refund_lines.csv`    | One row per refunded line item                     |
-| `data/audit_log.csv`       | Append-only trail of who did what                  |
-| `data/backups/yyyy-MM-dd/` | Automatic daily copy of the files above            |
-| `invoices/INV-####.pdf`    | The generated A4 invoice for each sale             |
+| Path                        | Contents                                          |
+|------------------------------|----------------------------------------------------|
+| `data/store.properties`     | Store details                                      |
+| `data/freshmart.db`         | Everything else — branches, users, catalogue/stock, invoices, refunds, audit log. One SQLite database file. |
+| `data/backups/yyyy-MM-dd/`  | Automatic daily snapshot of the database (via `VACUUM INTO`) |
+| `data/legacy_csv_backup/`   | Only present on an install upgraded from an older CSV version — your original CSV files, preserved untouched, never deleted |
+| `invoices/INV-####.pdf`     | The generated A4 invoice for each sale             |
 | `invoices/INV-####-thermal.pdf` | The generated thermal receipt for each sale   |
 
 **Reset to a clean slate:** delete the `data/` and `invoices/` folders — a fresh admin
 account, a single branch and the sample catalogue are re-seeded on the next run (and a new
 one-time admin password is printed to the console).
 
-**Upgrading from an older, single-branch install:** just run it — `items.csv` and
-`invoices.csv` in the old format are detected and migrated automatically into the new
-multi-branch schema on first load, with all existing data assigned to one branch seeded
+**Upgrading from an older, CSV-based install:** just run it. On first launch, if it finds
+the old `items.csv` / `invoices.csv` / etc. under `data/` but no `freshmart.db` yet, it
+automatically imports everything into a fresh database in one step — no data loss, no
+manual steps — then moves your original CSVs into `data/legacy_csv_backup/` (never
+deleted). Older single-branch, pre-refund and pre-multi-branch CSV shapes are all detected
+and migrated as part of the same step, with existing data assigned to one branch seeded
 from your existing `store.properties`.
 
 ---
@@ -273,21 +279,28 @@ from your existing `store.properties`.
 
 ```
 src/grocery/
-  Main.java                  Entry point (web server + --demo self-test, bootstrap)
+  Main.java                  Entry point (web server + --demo self-test, bootstrap, one-time DB migration)
   AppContext.java            Wires the services together
   PdfSelfCheck.java          Structural validator used by the self-test
   config/StoreConfig.java    Loads/saves store.properties
-  auth/                      PasswordHasher, Session, SessionManager, AuthFilter
-  model/                     Item, CartLine, Invoice, InvoiceLine, User, Role, Branch, AuditEntry
+  auth/                      PasswordHasher, Session, SessionManager, AuthFilter, LoginRateLimiter
+  model/                     Item, CartLine, Invoice, InvoiceLine, Refund, User, Role, Branch, AuditEntry
+  util/
+    Db.java                  The single shared SQLite connection - every read/write funnels through
+                             its synchronized query/update/inTransaction methods
+    AtomicFile.java          Crash-safe write-to-temp-then-rename (used by the migration + backups)
+    Csv.java, Text.java      CSV encode/decode and text sanitizing (legacy-import support)
+    Money.java               BigDecimal helpers so money is never floating point
   service/
-    InventoryService.java    Catalogue + stock, per branch (CSV persistence, seed data, atomic reserveStock)
+    InventoryService.java    Catalogue + stock, per branch (SQLite-backed, atomic reserveStock/restoreStock)
     BillingService.java      Stateless checkout + validation
-    InvoiceStore.java        Saves/loads invoices, atomic invoice numbering
+    InvoiceStore.java        Saves/loads invoices; header + line-items commit in one transaction
     RefundService.java       Returns: atomic line-quantity guard + stock restore, RFD-#### numbering
     UserService.java         User accounts + authentication
     BranchService.java       Branches + catalogue cloning
     AuditLogService.java     Append-only audit trail
-    BackupService.java       Zip download + daily automatic backup
+    BackupService.java       On-demand zip + daily automatic backup, via SQLite's VACUUM INTO
+    SqliteMigration.java     One-time import of a pre-SQLite data/ folder (CSVs → freshmart.db)
   pdf/
     PdfDocument.java         Minimal, dependency-free PDF writer (any page size)
     InvoicePdfGenerator.java Lays out the A4 tax invoice
@@ -303,7 +316,10 @@ src/grocery/
 web/                         The front-end (served at http://localhost:8080)
   index.html, css/style.css, js/app.js, favicon.svg
 
-lib/gson-2.11.0.jar          The only third-party dependency (bundled)
+lib/
+  gson-2.11.0.jar            JSON (requests/responses)
+  sqlite-jdbc-3.46.1.3.jar   Embedded SQLite driver - bundles its own native library, nothing
+                             extra to install
 ```
 
 ---
