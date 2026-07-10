@@ -61,6 +61,16 @@ function fmtQty(q) { q = Number(q || 0); return Number.isInteger(q) ? String(q) 
 
 /** Returns a wrapped fn that only fires after `ms` of quiet - swap into keystroke handlers
  *  that rebuild large HTML strings so a fast typist doesn't cause a paint per key. */
+/** Maps a payment-mode label to a stable palette slot so the same mode always gets
+ *  the same colour across sessions - matters when the shop owner scans the mix at a glance. */
+function payColor(mode) {
+    const m = String(mode || "").trim().toLowerCase();
+    if (m === "cash") return "green";
+    if (m === "card") return "blue";
+    if (m === "upi") return "violet";
+    return "amber";
+}
+
 function debounced(fn, ms) {
     let t = null;
     return function () {
@@ -488,99 +498,184 @@ async function loadDashboard() {
         }));
     } catch (e) { view.innerHTML = `<div class="empty-state">Could not load dashboard.</div>`; return; }
 
-    const maxCat = Math.max(1, ...d.categoryRevenue.map(c => c.amount));
     const canManage = session.role !== "CASHIER";
-    // "Net Sales" replaces the plain "Total Sales" tile whenever any refund exists in this
-    // period - the store owner cares about what actually stays in the till after returns.
-    const salesCard = d.refundCount > 0
-        ? { ico: "💰", cls: "green", value: money(d.netSales), label: "Net Sales", nav: "invoices",
-            hint: `Gross ${money(d.totalSales)} − Refunds ${money(d.refundTotal)}` }
-        : { ico: "💰", cls: "green", value: money(d.totalSales), label: "Total Sales", nav: "invoices", hint: "View invoices →" };
+    const netValue = d.refundCount > 0 ? d.netSales : d.totalSales;
+    const netLabel = d.refundCount > 0 ? "Net Sales" : "Total Sales";
+    // Sales-delta chip: up/down arrow + percentage vs the equal-length window before this one.
+    // Server sends previousNetSales=0 when no comparable window applies (all-time or first day).
+    let deltaChip = "";
+    if (d.previousNetSales > 0) {
+        const pct = ((netValue - d.previousNetSales) / d.previousNetSales) * 100;
+        const cls = pct >= 0 ? "up" : "down";
+        const arrow = pct >= 0 ? "▲" : "▼";
+        deltaChip = `<span class="delta-chip ${cls}" title="vs previous ${esc(periodLabel().toLowerCase())}">${arrow} ${Math.abs(pct).toFixed(1)}%</span>`;
+    }
     const cards = [
-        salesCard,
-        { ico: "🧾", cls: "blue", value: d.invoiceCount, label: "Invoices", nav: "invoices", hint: "View all →" },
+        { ico: "💰", cls: "green", value: money(netValue), label: netLabel, nav: "invoices",
+          hint: d.refundCount > 0 ? `Gross ${money(d.totalSales)} − Refunds ${money(d.refundTotal)}` : "View invoices →",
+          extra: deltaChip },
+        { ico: "🧾", cls: "blue", value: d.invoiceCount, label: "Invoices", nav: "invoices",
+          hint: d.invoiceCount > 0 ? `Avg. bill ${money(d.averageSale)}` : "No sales in period" },
         { ico: "📦", cls: "violet", value: d.itemCount, label: "Products", nav: "products", hint: "Manage products →" },
-        { ico: "⚠️", cls: "amber", value: d.lowStockCount, label: "Low Stock Items", nav: "products", hint: "Restock now →", filter: "lowstock" }
+        { ico: "⚠️", cls: d.lowStockCount > 0 ? "amber" : "muted", value: d.lowStockCount,
+          label: "Low Stock", nav: "products", filter: "lowstock",
+          hint: d.lowStockCount > 0 ? "Restock now →" : "All well stocked" }
     ];
 
+    // Branch bar chart: real horizontal bars with % share, replacing the plain amount list.
+    const maxBranch = Math.max(1, ...(d.branchRevenue || []).map(b => b.amount));
+    const totalBranchRevenue = (d.branchRevenue || []).reduce((s, b) => s + b.amount, 0);
     const branchCard = d.allBranches ? `
         <div class="card">
-            <div class="card-head"><div class="card-title">Sales by Branch</div></div>
+            <div class="card-head"><div class="card-title">Sales by Branch</div>
+                <span class="mini-sub">${d.branchRevenue.length} branch${d.branchRevenue.length === 1 ? "" : "es"}</span></div>
             <div class="card-body">
-                <div class="mini-list">
-                    ${d.branchRevenue.length ? d.branchRevenue.map(b => `
-                        <div class="mini-row">
-                            <div><div class="mini-main">${esc(b.branchName)}</div><div class="mini-sub">${b.invoiceCount} invoice(s)</div></div>
-                            <span class="money">${money(b.amount)}</span>
-                        </div>`).join("") : `<div class="mini-sub">No branches yet.</div>`}
-                </div>
+                ${d.branchRevenue.length ? d.branchRevenue.map(b => {
+                    const share = totalBranchRevenue > 0 ? (b.amount / totalBranchRevenue * 100) : 0;
+                    return `<div class="bar-row">
+                        <div class="bar-label">
+                            <span class="cat">${esc(b.branchName)} <span class="mini-sub">· ${b.invoiceCount} bill(s)</span></span>
+                            <span class="amt">${money(b.amount)} <span class="mini-sub">· ${share.toFixed(0)}%</span></span>
+                        </div>
+                        <div class="bar-track"><div class="bar-fill" style="width:${Math.max(3, b.amount / maxBranch * 100)}%"></div></div>
+                    </div>`;
+                }).join("") : `<div class="mini-sub">No branches yet.</div>`}
             </div>
         </div>` : "";
 
+    // Category chart
+    const maxCat = Math.max(1, ...d.categoryRevenue.map(c => c.amount));
+    const categoryCard = `
+        <div class="card">
+            <div class="card-head"><div class="card-title">Revenue by Category</div>
+                <span class="mini-sub">${d.categoryRevenue.length} categor${d.categoryRevenue.length === 1 ? "y" : "ies"}</span></div>
+            <div class="card-body">
+                ${d.categoryRevenue.length ? d.categoryRevenue.map(c => `
+                    <div class="bar-row">
+                        <div class="bar-label"><span class="cat">${esc(c.category)}</span><span class="amt">${money(c.amount)}</span></div>
+                        <div class="bar-track"><div class="bar-fill" style="width:${Math.max(3, c.amount / maxCat * 100)}%"></div></div>
+                    </div>`).join("") : `<div class="empty-state">No sales yet — create a bill to see analytics.</div>`}
+            </div>
+        </div>`;
+
+    // Payment mix: a single segmented bar - visually shows the mode split at a glance
+    // (cashier/owner-relevant during the day, and reconciles against the till at close).
+    const totalPay = (d.paymentMix || []).reduce((s, p) => s + p.amount, 0);
+    const paymentCard = `
+        <div class="card">
+            <div class="card-head"><div class="card-title">Payment Mix</div>
+                <span class="mini-sub">${totalPay > 0 ? money(totalPay) + " collected" : "No sales in period"}</span></div>
+            <div class="card-body">
+                ${d.paymentMix.length ? `
+                    <div class="pay-mix-bar">
+                        ${d.paymentMix.map((p, i) => {
+                            const share = totalPay > 0 ? (p.amount / totalPay * 100) : 0;
+                            return `<span class="pay-seg pay-seg-${payColor(p.mode)}" style="width:${share}%" title="${esc(p.mode)}: ${money(p.amount)}"></span>`;
+                        }).join("")}
+                    </div>
+                    <div class="pay-legend">
+                        ${d.paymentMix.map(p => {
+                            const share = totalPay > 0 ? (p.amount / totalPay * 100) : 0;
+                            return `<div class="pay-legend-row">
+                                <span class="pay-dot pay-seg-${payColor(p.mode)}"></span>
+                                <span class="pay-name">${esc(p.mode)}</span>
+                                <span class="pay-count mini-sub">${p.count} bill(s)</span>
+                                <span class="pay-amt">${money(p.amount)} <span class="mini-sub">· ${share.toFixed(0)}%</span></span>
+                            </div>`;
+                        }).join("")}
+                    </div>` : `<div class="mini-sub">No sales in this period.</div>`}
+            </div>
+        </div>`;
+
+    // Top items chart
+    const maxTop = Math.max(1, ...(d.topItems || []).map(t => t.amount));
+    const topItemsCard = `
+        <div class="card">
+            <div class="card-head"><div class="card-title">Top Items</div>
+                <span class="mini-sub">by revenue</span></div>
+            <div class="card-body">
+                ${d.topItems.length ? d.topItems.map(t => `
+                    <div class="bar-row">
+                        <div class="bar-label">
+                            <span class="cat">${esc(t.name)} <span class="mini-sub">· ${fmtQty(t.quantity)} ${esc(t.unit || "")}</span></span>
+                            <span class="amt">${money(t.amount)}</span>
+                        </div>
+                        <div class="bar-track"><div class="bar-fill amber" style="width:${Math.max(3, t.amount / maxTop * 100)}%"></div></div>
+                    </div>`).join("") : `<div class="mini-sub">No sales in this period.</div>`}
+            </div>
+        </div>`;
+
+    const lowStockCard = `
+        <div class="card">
+            <div class="card-head"><div class="card-title">Low Stock Alerts</div>
+                <button class="link-action" data-nav="products" data-filter="lowstock">Manage →</button></div>
+            <div class="card-body">
+                <div class="mini-list">
+                    ${d.lowStock.length ? d.lowStock.slice(0, 6).map(s => `
+                        <div class="mini-row clickable" data-restock="${esc(s.id)}" data-branch="${esc(s.branchId)}" title="Click to restock">
+                            <div><div class="mini-main">${esc(s.name)}</div><div class="mini-sub">${esc(s.id)} · tap to restock</div></div>
+                            <span class="pill ${s.stock <= s.reorderLevel / 2 ? "danger" : "warn"}">${fmtQty(s.stock)} ${esc(s.unit)} left</span>
+                        </div>`).join("") : `<div class="empty-state-inline"><span class="big">👍</span>All items are well stocked.</div>`}
+                </div>
+            </div>
+        </div>`;
+
+    const recentInvoicesCard = `
+        <div class="card">
+            <div class="card-head"><div class="card-title">Recent Invoices</div>
+                <button class="link-action" data-nav="invoices">View all →</button></div>
+            <div class="card-body">
+                <div class="mini-list">
+                    ${d.recentInvoices.length ? d.recentInvoices.map(r => `
+                        <div class="mini-row clickable" data-pdf="/api/invoices/${encodeURIComponent(r.invoiceNo)}/pdf" title="Open invoice PDF">
+                            <div><div class="mini-main">${esc(r.invoiceNo)}</div><div class="mini-sub">${esc(r.customerName)} • ${esc(r.dateTime)}</div></div>
+                            <span class="money">${money(r.grandTotal)}</span>
+                        </div>`).join("") : `<div class="mini-sub">No invoices yet.</div>`}
+                </div>
+            </div>
+        </div>`;
+
+    // Layout: 3 columns on wide viewports so no card stretches lonelier than its neighbours.
+    // Column 1 (widest): Revenue by Category + (Sales by Branch when all-branches) OR Top Items
+    // Column 2: Payment Mix + Top Items (single-branch)/Low Stock
+    // Column 3: Recent Invoices + Low Stock (all-branches)
+    const leftCol = d.allBranches ? [categoryCard, branchCard] : [categoryCard, topItemsCard];
+    const midCol = d.allBranches ? [paymentCard, topItemsCard] : [paymentCard, lowStockCard];
+    const rightCol = d.allBranches ? [recentInvoicesCard, lowStockCard] : [recentInvoicesCard];
+
     view.innerHTML = `
-        <div class="dash-actions">
-            <button class="btn btn-primary" id="qaNewBill">🧾 Start New Bill</button>
-            ${canManage ? `<button class="btn" id="qaAddProduct">＋ Add Product</button>` : ""}
-            <div class="spacer"></div>
-            ${periodControl()}
+        <div class="dash-header">
+            <div class="dash-context">
+                <span class="dash-scope">${esc(d.branchName)}</span>
+                <span class="dash-scope-dot">·</span>
+                <span class="dash-scope">${esc(periodLabel())}</span>
+            </div>
+            <div class="dash-actions">
+                ${periodControl()}
+                <button class="btn btn-primary btn-sm" id="qaNewBill">🧾 Start New Bill</button>
+                ${canManage ? `<button class="btn btn-sm" id="qaAddProduct">＋ Add Product</button>` : ""}
+            </div>
         </div>
-        <div class="mini-sub" style="margin:-6px 0 16px">Showing: <b>${esc(d.branchName)}</b> · <b>${esc(periodLabel())}</b></div>
 
         <div class="stat-grid">
             ${cards.map(c => `
                 <div class="stat-card clickable" data-nav="${c.nav}" data-filter="${c.filter || ""}">
                     <div class="stat-top">
-                        <span class="stat-label">${c.label}</span>
                         <span class="stat-ico ${c.cls}">${c.ico}</span>
+                        <span class="stat-label">${c.label}</span>
                     </div>
-                    <div class="stat-value">${c.value}</div>
+                    <div class="stat-value-row">
+                        <div class="stat-value">${c.value}</div>
+                        ${c.extra || ""}
+                    </div>
                     <div class="stat-hint">${c.hint}</div>
                 </div>`).join("")}
         </div>
 
-        <div class="dash-grid">
-            <div class="card">
-                <div class="card-head"><div class="card-title">Revenue by Category</div>
-                    <span class="mini-sub">Avg. sale ${money(d.averageSale)}</span></div>
-                <div class="card-body">
-                    ${d.categoryRevenue.length ? d.categoryRevenue.map(c => `
-                        <div class="bar-row">
-                            <div class="bar-label"><span class="cat">${esc(c.category)}</span><span class="amt">${money(c.amount)}</span></div>
-                            <div class="bar-track"><div class="bar-fill" style="width:${Math.max(3, c.amount / maxCat * 100)}%"></div></div>
-                        </div>`).join("") : `<div class="empty-state">No sales yet — create a bill to see analytics.</div>`}
-                </div>
-            </div>
-
-            <div class="stack-16">
-                ${branchCard}
-                <div class="card">
-                    <div class="card-head"><div class="card-title">Low Stock Alerts</div>
-                        <button class="link-action" data-nav="products" data-filter="lowstock">Manage →</button></div>
-                    <div class="card-body">
-                        <div class="mini-list">
-                            ${d.lowStock.length ? d.lowStock.slice(0, 6).map(s => `
-                                <div class="mini-row clickable" data-restock="${esc(s.id)}" data-branch="${esc(s.branchId)}" title="Click to restock">
-                                    <div><div class="mini-main">${esc(s.name)}</div><div class="mini-sub">${esc(s.id)} · tap to restock</div></div>
-                                    <span class="pill ${s.stock <= s.reorderLevel / 2 ? "danger" : "warn"}">${fmtQty(s.stock)} ${esc(s.unit)} left</span>
-                                </div>`).join("") : `<div class="mini-sub">All items are well stocked. 👍</div>`}
-                        </div>
-                    </div>
-                </div>
-
-                <div class="card">
-                    <div class="card-head"><div class="card-title">Recent Invoices</div>
-                        <button class="link-action" data-nav="invoices">View all →</button></div>
-                    <div class="card-body">
-                        <div class="mini-list">
-                            ${d.recentInvoices.length ? d.recentInvoices.map(r => `
-                                <div class="mini-row clickable" data-pdf="/api/invoices/${encodeURIComponent(r.invoiceNo)}/pdf" title="Open invoice PDF">
-                                    <div><div class="mini-main">${esc(r.invoiceNo)}</div><div class="mini-sub">${esc(r.customerName)} • ${esc(r.dateTime)}</div></div>
-                                    <span class="money">${money(r.grandTotal)}</span>
-                                </div>`).join("") : `<div class="mini-sub">No invoices yet.</div>`}
-                        </div>
-                    </div>
-                </div>
-            </div>
+        <div class="dash-grid dash-grid-3">
+            <div class="stack-16">${leftCol.join("")}</div>
+            <div class="stack-16">${midCol.join("")}</div>
+            <div class="stack-16">${rightCol.join("")}</div>
         </div>`;
 
     // wire up the interactions

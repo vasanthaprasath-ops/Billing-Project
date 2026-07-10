@@ -241,10 +241,18 @@ tr.muted td { opacity: .55; }
 .btn-lg { padding: 13px 18px; font-size: 15px; }
 
 /* ---------------- Dashboard ---------------- */
+.dash-header {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; margin-bottom: 18px; flex-wrap: wrap;
+}
+.dash-context { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+.dash-scope { font-weight: 700; color: var(--ink); }
+.dash-scope-dot { opacity: .5; }
+
 .stat-grid {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
-    gap: 16px;
+    gap: 14px;
     margin-bottom: 20px;
 }
 .stat-card {
@@ -252,30 +260,43 @@ tr.muted td { opacity: .55; }
     border: 1px solid var(--border);
     border-radius: var(--radius);
     box-shadow: var(--shadow);
-    padding: 18px;
+    padding: 14px 16px;
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 8px;
+    min-width: 0;
 }
-.stat-top { display: flex; align-items: center; justify-content: space-between; }
+.stat-top { display: flex; align-items: center; gap: 10px; }
 .stat-ico {
-    width: 40px; height: 40px; border-radius: 11px;
-    display: grid; place-items: center; font-size: 19px;
+    width: 34px; height: 34px; border-radius: 10px;
+    display: grid; place-items: center; font-size: 17px;
+    flex-shrink: 0;
 }
 .stat-ico.green { background: var(--green-soft); }
 .stat-ico.blue { background: #dbeafe; }
 .stat-ico.amber { background: #fef3c7; }
 .stat-ico.violet { background: #ede9fe; }
-.stat-value { font-size: 25px; font-weight: 800; letter-spacing: -.5px; }
-.stat-label { font-size: 12.5px; color: var(--muted); font-weight: 500; }
-.stat-hint { font-size: 11.5px; color: var(--green-dark); font-weight: 600; margin-top: 2px; opacity: 0; transition: opacity .14s; }
+.stat-ico.muted { background: #eef2f0; opacity: .7; }
+.stat-value-row { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.stat-value { font-size: 24px; font-weight: 800; letter-spacing: -.5px; line-height: 1.1; }
+.stat-label { font-size: 12.5px; color: var(--muted); font-weight: 600; letter-spacing: .1px; }
+.stat-hint { font-size: 11.5px; color: var(--muted); font-weight: 500; }
+.stat-card.clickable:hover .stat-hint { color: var(--green-dark); }
+
+.delta-chip {
+    display: inline-flex; align-items: center; gap: 3px;
+    font-size: 11.5px; font-weight: 700;
+    padding: 2px 7px; border-radius: 999px;
+    font-variant-numeric: tabular-nums;
+}
+.delta-chip.up { background: var(--green-soft); color: var(--green-dark); }
+.delta-chip.down { background: #fee2e2; color: var(--red); }
 
 .clickable { cursor: pointer; }
 .stat-card.clickable { transition: transform .14s, box-shadow .14s, border-color .14s; }
 .stat-card.clickable:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); border-color: var(--green); }
-.stat-card.clickable:hover .stat-hint { opacity: 1; }
 
-.dash-actions { display: flex; gap: 10px; margin-bottom: 18px; }
+.dash-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
 .link-action { font-size: 12.5px; color: var(--green-dark); font-weight: 600; cursor: pointer; background: none; border: 0; padding: 0; }
 .link-action:hover { text-decoration: underline; }
@@ -289,20 +310,49 @@ tr.muted td { opacity: .55; }
     gap: 16px;
     align-items: start;
 }
+/* Three-column layout at wide viewports; the 1024px breakpoint below collapses everything. */
+.dash-grid.dash-grid-3 {
+    grid-template-columns: 1.4fr 1fr 1fr;
+}
 
 /* horizontal bar chart */
 .bar-row { margin-bottom: 14px; }
 .bar-row:last-child { margin-bottom: 0; }
-.bar-label { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 5px; }
-.bar-label .cat { font-weight: 600; }
-.bar-label .amt { color: var(--muted); font-variant-numeric: tabular-nums; }
-.bar-track { height: 10px; background: #eef2f0; border-radius: 6px; overflow: hidden; }
+.bar-label { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 5px; gap: 10px; }
+.bar-label .cat { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-label .amt { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.bar-track { height: 8px; background: #eef2f0; border-radius: 6px; overflow: hidden; }
 .bar-fill {
     height: 100%;
     border-radius: 6px;
     background: linear-gradient(90deg, var(--green), #4ade80);
     transition: width .5s ease;
 }
+.bar-fill.amber { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
+.bar-fill.blue { background: linear-gradient(90deg, #2563eb, #60a5fa); }
+.bar-fill.violet { background: linear-gradient(90deg, #7c3aed, #a78bfa); }
+
+/* Payment mix: stacked segmented bar + legend */
+.pay-mix-bar {
+    display: flex; height: 12px; border-radius: 8px; overflow: hidden;
+    background: #eef2f0; margin-bottom: 14px;
+}
+.pay-seg { display: inline-block; height: 100%; transition: width .5s ease; }
+.pay-seg-green { background: linear-gradient(90deg, var(--green), #4ade80); }
+.pay-seg-blue { background: linear-gradient(90deg, #2563eb, #60a5fa); }
+.pay-seg-violet { background: linear-gradient(90deg, #7c3aed, #a78bfa); }
+.pay-seg-amber { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
+.pay-legend { display: flex; flex-direction: column; gap: 8px; }
+.pay-legend-row { display: grid; grid-template-columns: 14px 1fr auto auto; gap: 10px; align-items: baseline; font-size: 13px; }
+.pay-dot { width: 10px; height: 10px; border-radius: 3px; align-self: center; }
+.pay-name { font-weight: 600; }
+.pay-amt { font-variant-numeric: tabular-nums; font-weight: 600; }
+
+.empty-state-inline {
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 0; color: var(--muted); font-size: 13px;
+}
+.empty-state-inline .big { font-size: 22px; }
 
 .mini-list { display: flex; flex-direction: column; }
 .mini-row {
@@ -749,9 +799,16 @@ tr.tbl-group-row td {
 .settings-card .card-body { display: flex; flex-direction: column; gap: 4px; }
 
 /* ---------------- Responsive ---------------- */
+/* Between 1024px and 1279px the three-column dash gets cramped - fall to 2 columns
+   (the third column stacks under the first two) before collapsing entirely below 1024px. */
+@media (max-width: 1279px) {
+    .dash-grid.dash-grid-3 { grid-template-columns: 1.4fr 1fr; }
+    .dash-grid.dash-grid-3 > *:nth-child(3) { grid-column: 1 / -1; }
+}
 @media (max-width: 1024px) {
     .stat-grid { grid-template-columns: repeat(2, 1fr); }
-    .dash-grid { grid-template-columns: 1fr; }
+    .dash-grid, .dash-grid.dash-grid-3 { grid-template-columns: 1fr; }
+    .dash-grid.dash-grid-3 > *:nth-child(3) { grid-column: auto; }
     .pos { grid-template-columns: 1fr; height: auto; }
     .cart { position: static; max-height: none; }
 }

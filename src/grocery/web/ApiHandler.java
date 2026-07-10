@@ -703,6 +703,70 @@ public class ApiHandler implements HttpHandler {
                     inv.getCustomerName(),
                     inv.getGrandTotal().doubleValue()));
         }
+
+        // Payment-mix breakdown: how the period's revenue split across Cash / Card / UPI.
+        // Order the modes by amount so the biggest slice always leads the chart.
+        Map<String, double[]> byMode = new LinkedHashMap<>(); // [count, amount]
+        for (Invoice inv : invoices) {
+            String mode = inv.getPaymentMode() == null || inv.getPaymentMode().isEmpty()
+                    ? "Other" : inv.getPaymentMode();
+            double[] agg = byMode.computeIfAbsent(mode, k -> new double[2]);
+            agg[0] += 1;
+            agg[1] += inv.getGrandTotal().doubleValue();
+        }
+        d.paymentMix = new ArrayList<>();
+        byMode.entrySet().stream()
+                .sorted((a, b) -> Double.compare(b.getValue()[1], a.getValue()[1]))
+                .forEach(e -> d.paymentMix.add(new Dtos.PaymentBreakdownDto(
+                        e.getKey(), (int) e.getValue()[0], round2(e.getValue()[1]))));
+
+        // Top-selling items in the period, by revenue. The Z-report already computes this
+        // for a whole day per branch; here we do it for whatever period + scope is active.
+        Map<String, double[]> byItem = new LinkedHashMap<>(); // [qty, amount]
+        Map<String, String> itemUnit = new LinkedHashMap<>();
+        for (Invoice inv : invoices) {
+            for (InvoiceLine line : inv.getLines()) {
+                double[] agg = byItem.computeIfAbsent(line.getName(), k -> new double[2]);
+                agg[0] += line.getQuantity();
+                agg[1] += line.getAmount().doubleValue();
+                itemUnit.putIfAbsent(line.getName(), line.getUnit());
+            }
+        }
+        d.topItems = new ArrayList<>();
+        byItem.entrySet().stream()
+                .sorted((a, b) -> Double.compare(b.getValue()[1], a.getValue()[1]))
+                .limit(5)
+                .forEach(e -> d.topItems.add(new Dtos.TopItemDto(
+                        e.getKey(), e.getValue()[0], itemUnit.get(e.getKey()), round2(e.getValue()[1]))));
+
+        // "vs previous period" delta: sales in the immediately-preceding equal-length window.
+        // Only meaningful when the period has finite bounds - all-time has no "before".
+        d.previousNetSales = 0;
+        LocalDate pFrom = parseDate(params.get("from"));
+        LocalDate pTo = parseDate(params.get("to"));
+        if (pFrom != null && pTo != null && !pTo.isBefore(pFrom)) {
+            long days = java.time.temporal.ChronoUnit.DAYS.between(pFrom, pTo) + 1;
+            LocalDate prevTo = pFrom.minusDays(1);
+            LocalDate prevFrom = prevTo.minusDays(days - 1);
+            List<Invoice> prevInv = branchId == null ? ctx.invoiceStore().getAll()
+                    : ctx.invoiceStore().getAllForBranch(branchId);
+            List<Refund> prevRef = branchId == null ? ctx.refunds().getAll()
+                    : ctx.refunds().getAllForBranch(branchId);
+            double prevTotal = 0, prevRefund = 0;
+            for (Invoice inv : prevInv) {
+                LocalDate day = inv.getDateTime().toLocalDate();
+                if (!day.isBefore(prevFrom) && !day.isAfter(prevTo)) {
+                    prevTotal += inv.getGrandTotal().doubleValue();
+                }
+            }
+            for (Refund r : prevRef) {
+                LocalDate day = r.getDateTime().toLocalDate();
+                if (!day.isBefore(prevFrom) && !day.isAfter(prevTo)) {
+                    prevRefund += r.getRefundAmount().doubleValue();
+                }
+            }
+            d.previousNetSales = round2(prevTotal - prevRefund);
+        }
         return d;
     }
 

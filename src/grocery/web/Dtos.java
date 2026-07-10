@@ -157,6 +157,10 @@ public final class Dtos {
         public int refundCount;
         /** totalSales - refundTotal. What the store actually keeps. */
         public double netSales;
+        /** Net sales for the equal-length period immediately before this one, so the UI
+         *  can render a "vs last period" delta. Zero when no comparable previous window
+         *  applies (e.g. reportPeriod="all"). */
+        public double previousNetSales;
         public int invoiceCount;
         public int itemCount;
         public int lowStockCount;
@@ -165,6 +169,10 @@ public final class Dtos {
         public List<BranchRevenueDto> branchRevenue;
         public List<LowStockDto> lowStock;
         public List<RecentInvoiceDto> recentInvoices;
+        /** Cash / Card / UPI breakdown across the period. */
+        public List<PaymentBreakdownDto> paymentMix;
+        /** Best sellers by revenue in the period - up to 5. */
+        public List<TopItemDto> topItems;
     }
 
     public static class BranchDto {
