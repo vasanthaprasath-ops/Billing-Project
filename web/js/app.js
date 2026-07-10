@@ -446,6 +446,7 @@ const VIEW_META = {
     billing: ["New Bill", "Ring up a sale and print an invoice"],
     products: ["Products", "Manage your catalogue and stock"],
     invoices: ["Invoices", "Browse and reprint past bills"],
+    dayreport: ["Day Report", "Day-end reconciliation for your till"],
     admin: ["Admin", "Branches, users, audit log and backups"]
 };
 
@@ -472,6 +473,7 @@ function switchView(name, opts) {
     else if (name === "billing") renderBilling();
     else if (name === "products") loadProducts();
     else if (name === "invoices") loadInvoices();
+    else if (name === "dayreport") renderZReportTab(document.getElementById("view-dayreport"));
     else if (name === "admin") renderAdminTab(currentAdminTab);
 }
 
@@ -640,13 +642,19 @@ async function loadDashboard() {
             </div>
         </div>`;
 
-    // Layout: 3 columns on wide viewports so no card stretches lonelier than its neighbours.
-    // Column 1 (widest): Revenue by Category + (Sales by Branch when all-branches) OR Top Items
-    // Column 2: Payment Mix + Top Items (single-branch)/Low Stock
-    // Column 3: Recent Invoices + Low Stock (all-branches)
-    const leftCol = d.allBranches ? [categoryCard, branchCard] : [categoryCard, topItemsCard];
-    const midCol = d.allBranches ? [paymentCard, topItemsCard] : [paymentCard, lowStockCard];
-    const rightCol = d.allBranches ? [recentInvoicesCard, lowStockCard] : [recentInvoicesCard];
+    // Layout: 3 columns on wide viewports, each card pinned to one fixed column
+    // regardless of view mode - switching between "All Branches" and a single
+    // branch used to make Top Items and Low Stock silently jump columns (they
+    // moved from col 1/2 to col 2/3) even though nothing about them changed.
+    // Now only the Sales-by-Branch card's presence changes (all-branches only,
+    // appended where it's relevant - alongside Recent Invoices) - every other
+    // card keeps the same column in every mode.
+    // Column 1: Revenue by Category + Top Items (what's selling)
+    // Column 2: Payment Mix + Low Stock Alerts (money in / stock out)
+    // Column 3: Recent Invoices + Sales by Branch (all-branches only)
+    const leftCol = [categoryCard, topItemsCard];
+    const midCol = [paymentCard, lowStockCard];
+    const rightCol = d.allBranches ? [recentInvoicesCard, branchCard] : [recentInvoicesCard];
 
     view.innerHTML = `
         <div class="dash-header">
@@ -1404,7 +1412,9 @@ async function openReturnModal(invoiceNo) {
 /* ============================================================
    ADMIN: branches, users, audit log, backup
    ============================================================ */
-const ADMIN_TABS = [["branches", "Branches"], ["users", "Users"], ["zreport", "Day Report"], ["audit", "Audit Log"], ["backup", "Backup"]];
+// Day Report moved to its own top-level nav item (every role gets their own branch's
+// report, not just Admin) - these tabs are the genuinely admin-only management screens.
+const ADMIN_TABS = [["branches", "Branches"], ["users", "Users"], ["audit", "Audit Log"], ["backup", "Backup"]];
 
 function renderAdminTab(tab) {
     currentAdminTab = tab;
@@ -1418,7 +1428,6 @@ function renderAdminTab(tab) {
     const body = document.getElementById("adminTabBody");
     if (tab === "branches") renderBranchesTab(body);
     else if (tab === "users") renderUsersTab(body);
-    else if (tab === "zreport") renderZReportTab(body);
     else if (tab === "audit") renderAuditTab(body);
     else if (tab === "backup") renderBackupTab(body);
 }
@@ -1613,25 +1622,25 @@ function branchNameOf(id) {
 async function renderZReportTab(body) {
     const today = ymd(new Date());
     const savedDate = body.dataset.zdate || today;
+    // Admin can pick any branch (or all combined); Manager/Cashier are pinned to their own
+    // branch server-side regardless of what's sent, so there's nothing for them to pick -
+    // the `branches` list is never even loaded for non-admins (see bootApp), so reusing the
+    // admin picker as-is would render an empty, misleading dropdown.
+    const isAdmin = session.role === "ADMIN";
     body.innerHTML = `
         <div class="toolbar no-print">
             <div class="field" style="max-width:180px;margin:0"><label for="zDate">Date</label>
                 <input class="input" id="zDate" type="date" value="${esc(savedDate)}" max="${today}"></div>
-            <div class="field" style="max-width:220px;margin:0"><label for="zBranch">Branch</label>
-                <select class="input" id="zBranch"></select></div>
+            ${isAdmin ? `<div class="field" style="max-width:220px;margin:0"><label for="zBranch">Branch</label>
+                <select class="input" id="zBranch"></select></div>` : ""}
             <div class="spacer"></div>
             <button class="btn" id="zPrint">🖨️ Print</button>
         </div>
         <div id="zReportBody"><div class="empty-state">Loading…</div></div>`;
-    // Branch picker: pre-filled with everything the current admin can see.
-    const sel = document.getElementById("zBranch");
-    sel.innerHTML = `<option value="all">All Branches</option>` +
-        branches.map(b => `<option value="${esc(b.id)}">${esc(b.name)}</option>`).join("");
-    sel.value = currentBranchId || "all";
 
     const load = async () => {
         const d = document.getElementById("zDate").value || today;
-        const b = document.getElementById("zBranch").value;
+        const b = isAdmin ? document.getElementById("zBranch").value : session.branchId;
         body.dataset.zdate = d;
         try {
             const z = await api.get("/api/reports/z" + buildQuery({ date: d, branchId: b }));
@@ -1640,8 +1649,15 @@ async function renderZReportTab(body) {
             document.getElementById("zReportBody").innerHTML = `<div class="empty-state">${esc(e.message)}</div>`;
         }
     };
+    if (isAdmin) {
+        // Branch picker: pre-filled with everything the current admin can see.
+        const sel = document.getElementById("zBranch");
+        sel.innerHTML = `<option value="all">All Branches</option>` +
+            branches.map(b => `<option value="${esc(b.id)}">${esc(b.name)}</option>`).join("");
+        sel.value = currentBranchId || "all";
+        sel.onchange = load;
+    }
     document.getElementById("zDate").onchange = load;
-    document.getElementById("zBranch").onchange = load;
     document.getElementById("zPrint").onclick = () => window.print();
     load();
 }
