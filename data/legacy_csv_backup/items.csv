@@ -1,0 +1,70 @@
+id,branchId,name,category,unit,price,taxRatePercent,stock,barcode,reorderLevel
+ITM-001,BR-001,Basmati Rice 1kg,Grains,pkt,120.00,5.0,40.0,8901000000017,10.0
+ITM-002,BR-001,Toor Dal 1kg,Pulses,pkt,145.00,5.0,38.0,,10.0
+ITM-003,BR-001,Sunflower Oil 1L,Oils,ltr,165.00,5.0,32.0,,10.0
+ITM-004,BR-001,Aashirvaad Atta 5kg,Grains,pkt,285.00,5.0,24.0,,10.0
+ITM-005,BR-001,Sugar 1kg,Essentials,kg,48.00,5.0,78.0,,10.0
+ITM-006,BR-001,Iodised Salt 1kg,Essentials,pkt,22.00,5.0,89.0,,10.0
+ITM-007,BR-001,Amul Butter 100g,Dairy,pc,58.00,12.0,7.0,,10.0
+ITM-008,BR-001,Milk 500ml,Dairy,pkt,28.00,0.0,46.0,,10.0
+ITM-009,BR-001,Brown Eggs (6),Dairy,pkt,72.00,0.0,39.0,,10.0
+ITM-010,BR-001,Tata Tea Gold 250g,Beverages,pkt,140.00,5.0,27.0,,10.0
+ITM-011,BR-001,Nescafe Coffee 50g,Beverages,pc,165.00,18.0,14.0,,10.0
+ITM-012,BR-001,Maggi Noodles (4 pack),Snacks,pkt,56.00,12.0,44.0,,10.0
+ITM-013,BR-001,Britannia Biscuits,Snacks,pkt,30.00,18.0,59.0,,10.0
+ITM-014,BR-001,Lays Chips,Snacks,pc,20.00,18.0,66.0,,10.0
+ITM-015,BR-001,Colgate Toothpaste 100g,Personal Care,pc,92.00,18.0,32.0,,10.0
+ITM-016,BR-001,Lifebuoy Soap,Personal Care,pc,35.00,18.0,49.0,,10.0
+ITM-017,BR-001,Surf Excel 1kg,Household,pkt,130.00,18.0,26.0,,10.0
+ITM-018,BR-001,Vim Dishwash Bar,Household,pc,20.00,18.0,54.0,,10.0
+ITM-019,BR-001,Onion 1kg,Vegetables,kg,40.00,0.0,89.5,,10.0
+ITM-020,BR-001,Tomato 1kg,Vegetables,kg,35.00,0.0,100.0,,10.0
+ITM-021,BR-001,Potato 1kg,Vegetables,kg,32.00,0.0,100.0,,10.0
+ITM-022,BR-001,Banana 1dozen,Fruits,dozen,60.00,0.0,40.0,,10.0
+ITM-023,BR-002,Basmati Rice 1kg,Grains,pkt,120.00,5.0,0.0,8901000000017,10.0
+ITM-024,BR-002,Toor Dal 1kg,Pulses,pkt,145.00,5.0,0.0,,10.0
+ITM-025,BR-002,Sunflower Oil 1L,Oils,ltr,165.00,5.0,0.0,,10.0
+ITM-026,BR-002,Aashirvaad Atta 5kg,Grains,pkt,285.00,5.0,0.0,,10.0
+ITM-027,BR-002,Sugar 1kg,Essentials,kg,48.00,5.0,0.0,,10.0
+ITM-028,BR-002,Iodised Salt 1kg,Essentials,pkt,22.00,5.0,0.0,,10.0
+ITM-029,BR-002,Amul Butter 100g,Dairy,pc,58.00,12.0,0.0,,10.0
+ITM-030,BR-002,Milk 500ml,Dairy,pkt,28.00,0.0,0.0,,10.0
+ITM-031,BR-002,Brown Eggs (6),Dairy,pkt,72.00,0.0,0.0,,10.0
+ITM-032,BR-002,Tata Tea Gold 250g,Beverages,pkt,140.00,5.0,0.0,,10.0
+ITM-033,BR-002,Nescafe Coffee 50g,Beverages,pc,165.00,18.0,0.0,,10.0
+ITM-034,BR-002,Maggi Noodles (4 pack),Snacks,pkt,56.00,12.0,0.0,,10.0
+ITM-035,BR-002,Britannia Biscuits,Snacks,pkt,30.00,18.0,0.0,,10.0
+ITM-036,BR-002,Lays Chips,Snacks,pc,20.00,18.0,0.0,,10.0
+ITM-037,BR-002,Colgate Toothpaste 100g,Personal Care,pc,92.00,18.0,0.0,,10.0
+ITM-038,BR-002,Lifebuoy Soap,Personal Care,pc,35.00,18.0,0.0,,10.0
+ITM-039,BR-002,Surf Excel 1kg,Household,pkt,130.00,18.0,0.0,,10.0
+ITM-040,BR-002,Vim Dishwash Bar,Household,pc,20.00,18.0,0.0,,10.0
+ITM-041,BR-002,Onion 1kg,Vegetables,kg,40.00,0.0,0.0,,10.0
+ITM-042,BR-002,Tomato 1kg,Vegetables,kg,35.00,0.0,0.0,,10.0
+ITM-043,BR-002,Potato 1kg,Vegetables,kg,32.00,0.0,0.0,,10.0
+ITM-044,BR-002,Banana 1dozen,Fruits,dozen,60.00,0.0,0.0,,10.0
+ITM-045,BR-001,Whole Wheat Bread 400g,Bakery,pkt,45.00,5.0,30.0,8901000000246,10.0
+ITM-046,BR-001,Milk Bread 400g,Bakery,pkt,40.00,5.0,25.0,8901000000253,10.0
+ITM-047,BR-001,Rusk 200g,Bakery,pkt,35.00,12.0,40.0,8901000000260,10.0
+ITM-048,BR-001,Frozen Green Peas 500g,Frozen Foods,pkt,90.00,5.0,20.0,8901000000277,10.0
+ITM-049,BR-001,Frozen Paratha (5pc),Frozen Foods,pkt,120.00,12.0,18.0,8901000000284,10.0
+ITM-050,BR-001,Ice Cream Tub 700ml,Frozen Foods,pc,180.00,18.0,15.0,8901000000291,10.0
+ITM-051,BR-001,Harpic Toilet Cleaner 500ml,Household,pc,95.00,18.0,25.0,8901000000307,10.0
+ITM-052,BR-001,Colin Glass Cleaner 500ml,Household,pc,85.00,18.0,20.0,8901000000314,10.0
+ITM-053,BR-001,Mr. Clean Floor Cleaner 1L,Household,pc,150.00,18.0,18.0,8901000000321,10.0
+ITM-054,BR-001,Garbage Bags (30pc),Household,pkt,110.00,18.0,30.0,8901000000338,10.0
+ITM-055,BR-001,Candles (Pack of 6),Household,pkt,60.00,12.0,25.0,8901000000482,10.0
+ITM-056,BR-001,Head & Shoulders Shampoo 180ml,Personal Care,pc,210.00,18.0,22.0,8901000000345,10.0
+ITM-057,BR-001,Dove Soap,Personal Care,pc,55.00,18.0,45.0,8901000000352,10.0
+ITM-058,BR-001,Parachute Coconut Oil 200ml,Personal Care,pc,130.00,18.0,28.0,8901000000369,10.0
+ITM-059,BR-001,"Pampers Diapers (M, 20pc)",Baby Care,pkt,450.00,12.0,15.0,8901000000376,10.0
+ITM-060,BR-001,Johnson's Baby Powder 200g,Baby Care,pc,180.00,18.0,20.0,8901000000383,10.0
+ITM-061,BR-001,Cerelac Baby Food 300g,Baby Care,pc,260.00,5.0,18.0,8901000000390,10.0
+ITM-062,BR-001,Dairy Milk Chocolate 55g,Snacks,pc,50.00,18.0,60.0,8901000000406,10.0
+ITM-063,BR-001,Kurkure 90g,Snacks,pkt,20.00,18.0,70.0,8901000000413,10.0
+ITM-064,BR-001,Haldiram's Namkeen 200g,Snacks,pkt,75.00,12.0,40.0,8901000000420,10.0
+ITM-065,BR-001,Real Fruit Juice 1L,Beverages,pkt,120.00,12.0,25.0,8901000000437,10.0
+ITM-066,BR-001,Coca-Cola 750ml,Beverages,pc,45.00,28.0,48.0,8901000000444,10.0
+ITM-067,BR-001,Bisleri Water 1L,Beverages,pc,20.00,18.0,90.0,8901000000451,10.0
+ITM-068,BR-001,A4 Notebook,Stationery,pc,60.00,12.0,35.0,8901000000468,10.0
+ITM-069,BR-001,Ball Pen (Pack of 5),Stationery,pkt,40.00,12.0,50.0,8901000000475,10.0
