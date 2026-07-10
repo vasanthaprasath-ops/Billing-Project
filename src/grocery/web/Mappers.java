@@ -79,6 +79,15 @@ public final class Mappers {
         d.role = u.getRole().name();
         d.branchId = u.getBranchId();
         d.branchName = branchName(u.getBranchId(), branches);
+        if (u.getBranchId() != null) {
+            Branch b = branches.findById(u.getBranchId());
+            if (b != null) {
+                d.branchAddressLine1 = b.getAddressLine1();
+                d.branchAddressLine2 = b.getAddressLine2();
+                d.branchPhone = b.getPhone();
+                d.branchGstin = b.getGstin();
+            }
+        }
         d.mustChangePassword = u.isMustChangePassword();
         return d;
     }

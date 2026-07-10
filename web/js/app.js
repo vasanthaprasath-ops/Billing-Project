@@ -388,8 +388,13 @@ function setupBranchSwitcher() {
     sel.onchange = () => {
         currentBranchId = sel.value === "all" ? null : sel.value;
         localStorage.setItem("fm_branch", sel.value);
-        loadItems().catch(() => {});
-        refreshCurrentView();
+        renderStoreFooter();
+        // Re-render only AFTER the new branch's items have loaded. Firing loadItems()
+        // without awaiting it let refreshCurrentView() paint the Products/Billing screen
+        // from the previous branch's stale `items` array (the Dashboard masked this by
+        // re-fetching its own figures from the server), causing the product count and
+        // list to lag a branch behind the switcher.
+        loadItems().catch(() => {}).finally(refreshCurrentView);
     };
 }
 
@@ -947,7 +952,7 @@ function renderProducts(filter) {
         <div class="toolbar">
             <input class="input search" id="prodSearch" placeholder="Search products or barcode…" value="${esc(filter || "")}">
             <label class="check-inline" title="Show only items at or below their reorder level">
-                <input type="checkbox" id="lowStockToggle" ${productsLowStockOnly ? "checked" : ""}> Low stock only</label>
+                <input type="checkbox" id="lowStockToggle" ${productsLowStockOnly ? "checked" : ""}> Show low stock(s)</label>
             <div class="spacer"></div>
             <span class="mini-sub">${list.length} product(s) in ${categories.length} categor${categories.length === 1 ? "y" : "ies"}</span>
             ${canEdit ? `<button class="btn btn-primary" id="addProdBtn">＋ Add Product</button>` : ""}
@@ -1630,13 +1635,40 @@ function startClock() {
     setInterval(tick, 1000);
 }
 
+/** The active branch's identity block, if we can pin one down; else the store-wide fallback.
+ *  ADMIN with "All Branches" gets the store info; ADMIN with a branch picked gets that branch
+ *  (from the already-loaded `branches` list); Manager/Cashier get their own branch (from session). */
+function activeAddressBlock() {
+    if (session && session.role === "ADMIN") {
+        if (!currentBranchId) return null;
+        const b = branches.find(x => x.id === currentBranchId);
+        if (b) {
+            return { name: b.name, addressLine1: b.addressLine1, addressLine2: b.addressLine2,
+                     phone: b.phone, gstin: b.gstin };
+        }
+        return null;
+    }
+    if (session && session.branchId) {
+        return { name: session.branchName, addressLine1: session.branchAddressLine1,
+                 addressLine2: session.branchAddressLine2, phone: session.branchPhone,
+                 gstin: session.branchGstin };
+    }
+    return null;
+}
+
 function renderStoreFooter() {
+    const b = activeAddressBlock();
+    const name = b ? b.name : store.name;
+    const line1 = b ? (b.addressLine1 || "") : (store.addressLine1 || "");
+    const line2 = b ? (b.addressLine2 || "") : (store.addressLine2 || "");
+    const phone = b ? (b.phone || "") : (store.phone || "");
+    const gstin = b ? (b.gstin || "") : (store.gstin || "");
     document.getElementById("storeFooter").innerHTML = `
-        <div><b>${esc(store.name)}</b></div>
-        <div>${esc(store.addressLine1 || "")}</div>
-        <div>${esc(store.addressLine2 || "")}</div>
-        <div>☎ ${esc(store.phone || "")}</div>
-        <div>GSTIN: ${esc(store.gstin || "")}</div>`;
+        <div><b>${esc(name)}</b></div>
+        <div>${esc(line1)}</div>
+        <div>${esc(line2)}</div>
+        <div>☎ ${esc(phone)}</div>
+        <div>GSTIN: ${esc(gstin)}</div>`;
 }
 
 async function bootApp() {
@@ -1644,13 +1676,16 @@ async function bootApp() {
     try {
         store = await api.get("/api/store");
         document.getElementById("brandName").textContent = (store.name || "FreshMart").split(" ")[0];
-        renderStoreFooter();
     } catch (e) { toast("Could not load store info", "error"); }
     // The full branch list (address/phone/GSTIN of every branch) is admin-only server-side;
     // Manager/Cashier already know their own branch from /api/auth/me and never need this.
     try { branches = session.role === "ADMIN" ? await api.get("/api/branches") : []; } catch (e) { branches = []; }
     renderUserBox();
     setupBranchSwitcher();
+    // Render the footer AFTER the branch is known, so the address block reflects the
+    // active branch (admin's saved pick or the non-admin's own branch) instead of the
+    // store-wide default.
+    renderStoreFooter();
     try { await loadItems(); } catch (e) { /* shown per-view */ }
     switchView("dashboard");
 }

@@ -35,6 +35,11 @@ public class StaticHandler implements HttpHandler {
             return;
         }
 
+        // No build step and no cache-busted filenames here - the moment an edit lands on
+        // disk, every open browser tab must see it on its very next plain refresh, not just
+        // a hard refresh. Browsers apply their own heuristic caching to any response with no
+        // explicit freshness info, which is exactly what was silently happening before this.
+        ex.getResponseHeaders().set("Cache-Control", "no-store");
         byte[] bytes = Files.readAllBytes(file.toPath());
         Http.sendBytes(ex, 200, contentType(file.getName()), bytes);
     }

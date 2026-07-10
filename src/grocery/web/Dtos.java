@@ -207,6 +207,11 @@ public final class Dtos {
         public String role;
         public String branchId;
         public String branchName;
+        /** The user's own branch address/phone/GSTIN. Null when the user isn't tied to a branch (e.g. multi-branch ADMIN). */
+        public String branchAddressLine1;
+        public String branchAddressLine2;
+        public String branchPhone;
+        public String branchGstin;
         public boolean mustChangePassword;
     }
 
