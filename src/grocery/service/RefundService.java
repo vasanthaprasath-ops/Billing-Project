@@ -10,6 +10,8 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+
+import grocery.util.Time;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -174,16 +176,22 @@ public class RefundService {
             restock.add(new InventoryService.StockRequest(src.getItemId(), qty));
         }
 
-        inventory.restoreStock(original.getBranchId(), restock);
         Refund refund = new Refund(nextRefundNoLocked(), original.getInvoiceNo(),
-                original.getBranchId(), cashierUsername, LocalDateTime.now(), refundLines, reason);
-        refunds.add(refund);
+                original.getBranchId(), cashierUsername, Time.now(), refundLines, reason);
+        // One outer transaction covers restock + refund-header + refund-lines so
+        // a DB error partway through can't leave stock restored without a refund
+        // row (or a refund row with unrestored stock). Db.inTransaction is
+        // reentrant, so restoreStock's own inTransaction just piggybacks on this.
         db.inTransaction(() -> {
+            inventory.restoreStock(original.getBranchId(), restock);
             insertHeader(refund);
             for (InvoiceLine line : refund.getLines()) {
                 insertLine(refund.getRefundNo(), line);
             }
         });
+        // Add to memory only after commit so a rolled-back attempt doesn't leave
+        // a ghost that consumes its refund number.
+        refunds.add(refund);
         return refund;
     }
 
@@ -282,7 +290,7 @@ public class RefundService {
         try {
             when = LocalDateTime.parse(rs.getString("dateTime"), STAMP);
         } catch (RuntimeException ex) {
-            when = LocalDateTime.now();
+            when = Time.now();
         }
         List<InvoiceLine> lines = byRefund.getOrDefault(refundNo, Collections.emptyList());
         return new Refund(refundNo, rs.getString("originalInvoiceNo"), rs.getString("branchId"),
@@ -317,7 +325,7 @@ public class RefundService {
                 byRefund.computeIfAbsent(f.get(0), k -> new ArrayList<>()).add(line);
             }
         } catch (IOException e) {
-            System.err.println("Could not parse legacy refund_lines.csv: " + e.getMessage());
+            grocery.util.Log.warn("Could not parse legacy refund_lines.csv: " + e.getMessage(), e);
             return out;
         }
         try (BufferedReader r = new BufferedReader(new FileReader(headerFile, StandardCharsets.UTF_8))) {
@@ -334,13 +342,13 @@ public class RefundService {
                 try {
                     when = LocalDateTime.parse(f.get(4), STAMP);
                 } catch (RuntimeException ex) {
-                    when = LocalDateTime.now();
+                    when = Time.now();
                 }
                 List<InvoiceLine> lines = byRefund.getOrDefault(f.get(0), Collections.emptyList());
                 out.add(new Refund(f.get(0), f.get(1), f.get(2), f.get(3), when, lines, f.get(7)));
             }
         } catch (IOException e) {
-            System.err.println("Could not parse legacy refunds.csv: " + e.getMessage());
+            grocery.util.Log.warn("Could not parse legacy refunds.csv: " + e.getMessage(), e);
         }
         return out;
     }

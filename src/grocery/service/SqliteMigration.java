@@ -154,8 +154,8 @@ public final class SqliteMigration {
             try {
                 Files.move(src.toPath(), new File(backupDir, name).toPath(), StandardCopyOption.REPLACE_EXISTING);
             } catch (IOException e) {
-                System.err.println("Could not move legacy file " + name + " into legacy_csv_backup/: "
-                        + e.getMessage());
+                grocery.util.Log.warn("Could not move legacy file " + name + " into legacy_csv_backup/: "
+                        + e.getMessage(), e);
             }
         }
 

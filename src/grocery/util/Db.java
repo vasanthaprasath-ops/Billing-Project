@@ -26,9 +26,18 @@ import java.util.List;
 public final class Db {
 
     private final Connection conn;
+    private final File dbFile;
+    /**
+     * Depth of nested {@link #inTransaction} calls. Guarded by the same monitor
+     * as every other Db method, so no concurrent reader can see it half-updated.
+     * Non-zero means an outer transaction is in flight and nested calls must
+     * NOT commit/rollback themselves - the outermost frame owns the boundary.
+     */
+    private int transactionDepth;
 
-    private Db(Connection conn) {
+    private Db(Connection conn, File dbFile) {
         this.conn = conn;
+        this.dbFile = dbFile;
     }
 
     public static Db open(File dbFile) throws SQLException {
@@ -38,10 +47,16 @@ public final class Db {
             throw new SQLException("sqlite-jdbc driver not found on classpath", e);
         }
         Connection conn = DriverManager.getConnection("jdbc:sqlite:" + dbFile.getPath());
-        Db db = new Db(conn);
+        Db db = new Db(conn, dbFile);
         db.configure();
         createSchema(conn);
         return db;
+    }
+
+    /** The on-disk path of this database. Used by {@code BackupService} to open its own
+     *  short-lived read-only connection so {@code VACUUM INTO} doesn't block the till. */
+    public File file() {
+        return dbFile;
     }
 
     private void configure() throws SQLException {
@@ -109,6 +124,9 @@ public final class Db {
                     "amountPaid TEXT NOT NULL)");
             st.execute("CREATE INDEX IF NOT EXISTS idx_invoices_branchId ON invoices(branchId)");
             st.execute("CREATE INDEX IF NOT EXISTS idx_invoices_dateTime ON invoices(dateTime)");
+            // Z-report groups sales by cashier at the end of every shift - without this
+            // index that turns into a full-table scan once a store has ~100k invoices.
+            st.execute("CREATE INDEX IF NOT EXISTS idx_invoices_cashier ON invoices(cashierUsername)");
 
             st.execute("CREATE TABLE IF NOT EXISTS invoice_lines (" +
                     "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
@@ -122,6 +140,8 @@ public final class Db {
                     "amount TEXT NOT NULL, " +
                     "tax TEXT NOT NULL)");
             st.execute("CREATE INDEX IF NOT EXISTS idx_invoice_lines_invoiceNo ON invoice_lines(invoiceNo)");
+            // "Top items by revenue" and refund-remaining calculations both filter by itemId.
+            st.execute("CREATE INDEX IF NOT EXISTS idx_invoice_lines_itemId ON invoice_lines(itemId)");
 
             st.execute("CREATE TABLE IF NOT EXISTS refunds (" +
                     "refundNo TEXT PRIMARY KEY, " +
@@ -147,6 +167,8 @@ public final class Db {
                     "amount TEXT NOT NULL, " +
                     "tax TEXT NOT NULL)");
             st.execute("CREATE INDEX IF NOT EXISTS idx_refund_lines_refundNo ON refund_lines(refundNo)");
+            st.execute("CREATE INDEX IF NOT EXISTS idx_refund_lines_itemId ON refund_lines(itemId)");
+            st.execute("CREATE INDEX IF NOT EXISTS idx_refunds_dateTime ON refunds(dateTime)");
 
             st.execute("CREATE TABLE IF NOT EXISTS audit_log (" +
                     "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
@@ -208,12 +230,27 @@ public final class Db {
     /**
      * Run {@code body} as one atomic transaction: commits only if it returns
      * normally, rolls back entirely if it throws. Safe to call
-     * {@link #query}/{@link #update} from inside {@code body} on the same
-     * thread (reentrant lock).
+     * {@link #query}/{@link #update}/nested {@link #inTransaction} from inside
+     * {@code body} on the same thread (Java monitors are reentrant, and this
+     * method is nest-aware: a nested call just runs the body inline and lets
+     * the outermost frame decide whether to commit or roll back).
      */
     public synchronized void inTransaction(Runnable body) {
+        if (transactionDepth > 0) {
+            // Already inside an outer transaction - piggyback on its commit/rollback.
+            // A RuntimeException here still propagates, and because the outer frame
+            // sees it and rolls back, this nested unit is atomic with the outer one.
+            transactionDepth++;
+            try {
+                body.run();
+            } finally {
+                transactionDepth--;
+            }
+            return;
+        }
         try {
             conn.setAutoCommit(false);
+            transactionDepth = 1;
             try {
                 body.run();
                 conn.commit();
@@ -221,6 +258,7 @@ public final class Db {
                 conn.rollback();
                 throw e;
             } finally {
+                transactionDepth = 0;
                 conn.setAutoCommit(true);
             }
         } catch (SQLException e) {

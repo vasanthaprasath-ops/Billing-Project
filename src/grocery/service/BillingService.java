@@ -3,11 +3,13 @@ package grocery.service;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import grocery.model.CartLine;
 import grocery.model.Invoice;
 import grocery.model.InvoiceLine;
 import grocery.model.Item;
+import grocery.util.Db;
 import grocery.util.Money;
 import grocery.util.Text;
 
@@ -26,6 +28,12 @@ import grocery.util.Text;
  * one that actually prevents overselling.
  */
 public class BillingService {
+
+    private final Db db;
+
+    public BillingService(Db db) {
+        this.db = db;
+    }
 
     /** A single requested line: which item and how much of it. */
     public static class LineRequest {
@@ -81,7 +89,6 @@ public class BillingService {
         for (LineRequest req : requests) {
             stockRequests.add(new InventoryService.StockRequest(req.itemId, req.quantity));
         }
-        inventory.reserveStock(branchId, stockRequests);
 
         List<InvoiceLine> lines = new ArrayList<>();
         for (CartLine line : cart) {
@@ -97,11 +104,22 @@ public class BillingService {
         // Cash-tendered check: only enforced when the client actually reported an amount.
         // A blank / zero value means "no tender captured" - we fall back to grandTotal in the
         // invoice constructor so change reads as zero. This keeps card / UPI flows terse.
-        BigDecimal safePaid = null;
-        if (amountPaid != null && amountPaid.compareTo(Money.ZERO) > 0) {
-            safePaid = Money.scale(amountPaid);
-        }
-        return invoiceStore.createAndSave(branchId, cashierUsername, name, phone, mode, lines, safeDiscount, safePaid);
+        final BigDecimal safePaid = (amountPaid != null && amountPaid.compareTo(Money.ZERO) > 0)
+                ? Money.scale(amountPaid) : null;
+
+        // ONE outer transaction covers both the stock decrement and the invoice write.
+        // The previous code ran them as two separate transactions, so any exception between
+        // the two (DB error, PDF-gen crash, disk full) left stock permanently decremented
+        // with no invoice row - genuine inventory loss with nothing to reconcile against.
+        // Db.inTransaction is reentrant, so reserveStock's own inTransaction just nests
+        // inside this one and commits/rolls back with it.
+        AtomicReference<Invoice> result = new AtomicReference<>();
+        db.inTransaction(() -> {
+            inventory.reserveStock(branchId, stockRequests);
+            result.set(invoiceStore.createAndSave(branchId, cashierUsername, name, phone, mode,
+                    lines, safeDiscount, safePaid));
+        });
+        return result.get();
     }
 
     /** Backwards-compatible overload used by the demo self-test. */

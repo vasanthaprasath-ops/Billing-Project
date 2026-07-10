@@ -22,6 +22,7 @@ public class StoreConfig {
     private String email;
     private String gstin;
     private String currency;
+    private String timezone;
 
     public StoreConfig(File file) {
         this.file = file;
@@ -37,6 +38,7 @@ public class StoreConfig {
         email = "billing@freshmart.example";
         gstin = "33ABCDE1234F1Z5";
         currency = "Rs.";
+        timezone = "Asia/Kolkata";
     }
 
     public void load() {
@@ -57,6 +59,7 @@ public class StoreConfig {
         email = p.getProperty("email", email);
         gstin = p.getProperty("gstin", gstin);
         currency = p.getProperty("currency", currency);
+        timezone = p.getProperty("timezone", timezone);
     }
 
     public void save() {
@@ -68,6 +71,7 @@ public class StoreConfig {
         p.setProperty("email", email);
         p.setProperty("gstin", gstin);
         p.setProperty("currency", currency);
+        p.setProperty("timezone", timezone);
         File parent = file.getParentFile();
         if (parent != null) {
             parent.mkdirs();
@@ -75,7 +79,7 @@ public class StoreConfig {
         try (FileWriter w = new FileWriter(file)) {
             p.store(w, "Grocery store details shown on invoices");
         } catch (IOException e) {
-            System.err.println("Could not save store config: " + e.getMessage());
+            grocery.util.Log.warn("Could not save store config: " + e.getMessage(), e);
         }
     }
 
@@ -105,5 +109,9 @@ public class StoreConfig {
 
     public String getCurrency() {
         return currency;
+    }
+
+    public String getTimezone() {
+        return timezone;
     }
 }

@@ -166,7 +166,7 @@ public class BranchService {
                         Boolean.parseBoolean(f.get(6))));
             }
         } catch (IOException e) {
-            System.err.println("Could not parse legacy branches.csv: " + e.getMessage());
+            grocery.util.Log.warn("Could not parse legacy branches.csv: " + e.getMessage(), e);
         }
         return out;
     }

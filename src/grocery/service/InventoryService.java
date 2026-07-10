@@ -114,8 +114,9 @@ public class InventoryService {
         if (findById(item.getId()) != null) {
             throw new IllegalArgumentException("An item with id '" + item.getId() + "' already exists.");
         }
-        items.add(item);
+        // Write first; only add to the in-memory list once the row commits.
         insert(item);
+        items.add(item);
     }
 
     public synchronized void update(String branchId, Item item) {
@@ -125,8 +126,8 @@ public class InventoryService {
                 if (!existing.getBranchId().equalsIgnoreCase(branchId)) {
                     throw new IllegalArgumentException("That item does not belong to this branch.");
                 }
-                items.set(i, item);
                 updateRow(item);
+                items.set(i, item);
                 return;
             }
         }
@@ -134,14 +135,21 @@ public class InventoryService {
     }
 
     public synchronized void delete(String branchId, String id) {
-        boolean removed = items.removeIf(it ->
-                it.getId().equalsIgnoreCase(id) && it.getBranchId().equalsIgnoreCase(branchId));
-        if (removed) {
-            db.update("DELETE FROM items WHERE id=? AND branchId=?", ps -> {
-                ps.setString(1, id);
-                ps.setString(2, branchId);
-            });
+        Item target = null;
+        for (Item it : items) {
+            if (it.getId().equalsIgnoreCase(id) && it.getBranchId().equalsIgnoreCase(branchId)) {
+                target = it;
+                break;
+            }
         }
+        if (target == null) {
+            return;
+        }
+        db.update("DELETE FROM items WHERE id=? AND branchId=?", ps -> {
+            ps.setString(1, id);
+            ps.setString(2, branchId);
+        });
+        items.remove(target);
     }
 
     /** One line of a stock reservation request: which item, how much. */
@@ -174,6 +182,7 @@ public class InventoryService {
         }
 
         Map<String, Item> resolved = new LinkedHashMap<>();
+        Map<String, Double> newStock = new LinkedHashMap<>();
         for (Map.Entry<String, Double> e : totalRequested.entrySet()) {
             Item item = findInBranch(branchId, e.getKey());
             if (item == null) {
@@ -186,18 +195,22 @@ public class InventoryService {
                                 + ", requested: " + trim(e.getValue()) + ".");
             }
             resolved.put(e.getKey(), item);
+            newStock.put(e.getKey(), item.getStock() - e.getValue());
         }
 
-        // Every line checked out fine - now commit all the decrements together.
-        for (Map.Entry<String, Item> e : resolved.entrySet()) {
-            Item item = e.getValue();
-            item.setStock(item.getStock() - totalRequested.get(e.getKey()));
-        }
+        // Write to disk FIRST - only mutate the in-memory Item objects after the
+        // transaction commits. Doing it the other way round used to leave the JVM's
+        // stock counter decremented while a rolled-back transaction left the DB row
+        // untouched, so the very next checkout's guard would read the wrong number
+        // and could genuinely oversell.
         db.inTransaction(() -> {
-            for (Item item : resolved.values()) {
-                updateStock(item);
+            for (Map.Entry<String, Item> e : resolved.entrySet()) {
+                writeStock(e.getValue().getId(), newStock.get(e.getKey()));
             }
         });
+        for (Map.Entry<String, Item> e : resolved.entrySet()) {
+            e.getValue().setStock(newStock.get(e.getKey()));
+        }
         return resolved;
     }
 
@@ -216,39 +229,63 @@ public class InventoryService {
             }
             totals.merge(req.itemId, req.quantity, Double::sum);
         }
-        List<Item> changed = new ArrayList<>();
+        Map<Item, Double> newStock = new LinkedHashMap<>();
         for (Map.Entry<String, Double> e : totals.entrySet()) {
             Item item = findInBranch(branchId, e.getKey());
             if (item == null) {
                 continue;
             }
-            item.setStock(item.getStock() + e.getValue());
-            changed.add(item);
+            newStock.put(item, item.getStock() + e.getValue());
         }
-        if (!changed.isEmpty()) {
-            db.inTransaction(() -> {
-                for (Item item : changed) {
-                    updateStock(item);
-                }
-            });
+        if (newStock.isEmpty()) {
+            return;
+        }
+        // Same "write first, mutate memory after commit" order as reserveStock.
+        db.inTransaction(() -> {
+            for (Map.Entry<Item, Double> e : newStock.entrySet()) {
+                writeStock(e.getKey().getId(), e.getValue());
+            }
+        });
+        for (Map.Entry<Item, Double> e : newStock.entrySet()) {
+            e.getKey().setStock(e.getValue());
         }
     }
 
     /** Duplicate every item in {@code fromBranchId} into {@code toBranchId} with fresh ids and zero stock. */
     public synchronized List<Item> cloneCatalogue(String fromBranchId, String toBranchId) {
         List<Item> created = new ArrayList<>();
+        int seq = nextIdSeq();
         for (Item src : getAll(fromBranchId)) {
-            Item copy = new Item(nextId(), toBranchId, src.getName(), src.getCategory(), src.getUnit(),
-                    src.getPrice(), src.getTaxRatePercent(), 0, src.getBarcode(), src.getReorderLevel());
-            items.add(copy);
+            Item copy = new Item(String.format("ITM-%03d", seq++), toBranchId, src.getName(),
+                    src.getCategory(), src.getUnit(), src.getPrice(), src.getTaxRatePercent(),
+                    0, src.getBarcode(), src.getReorderLevel());
             created.add(copy);
         }
+        // Persist first, mutate memory after commit - a mid-batch DB error would
+        // otherwise leave the in-memory list carrying items the DB never accepted.
         db.inTransaction(() -> {
             for (Item copy : created) {
                 insert(copy);
             }
         });
+        items.addAll(created);
         return created;
+    }
+
+    private int nextIdSeq() {
+        int max = 0;
+        for (Item it : items) {
+            String id = it.getId();
+            int dash = id.lastIndexOf('-');
+            if (dash >= 0) {
+                try {
+                    max = Math.max(max, Integer.parseInt(id.substring(dash + 1)));
+                } catch (NumberFormatException ignore) {
+                    // non-numeric id, skip
+                }
+            }
+        }
+        return max + 1;
     }
 
     /** Generate the next free id of the form ITM-### (globally unique across all branches). */
@@ -302,10 +339,13 @@ public class InventoryService {
         });
     }
 
-    private void updateStock(Item it) {
+    /** Persist an explicit new stock value against an item id. Kept separate from the
+     *  in-memory Item's own {@code getStock()} so the caller can commit the DB row
+     *  before touching the JVM-side value (see {@link #reserveStock}). */
+    private void writeStock(String itemId, double newStock) {
         db.update("UPDATE items SET stock=? WHERE id=?", ps -> {
-            ps.setDouble(1, it.getStock());
-            ps.setString(2, it.getId());
+            ps.setDouble(1, newStock);
+            ps.setString(2, itemId);
         });
     }
 
@@ -428,7 +468,7 @@ public class InventoryService {
                 }
             }
         } catch (IOException e) {
-            System.err.println("Could not parse legacy items.csv: " + e.getMessage());
+            grocery.util.Log.warn("Could not parse legacy items.csv: " + e.getMessage(), e);
         }
         return out;
     }

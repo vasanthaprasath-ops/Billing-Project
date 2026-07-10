@@ -62,9 +62,32 @@ public final class Http {
         return null;
     }
 
+    /** True when {@code -DSESSION_SECURE=true} (or the env var of the same name) was set at boot -
+     *  flip it on when the app sits behind an HTTPS reverse proxy so the cookie never rides plain HTTP. */
+    private static final boolean SECURE_COOKIES = Boolean.parseBoolean(
+            System.getProperty("SESSION_SECURE", System.getenv().getOrDefault("SESSION_SECURE", "false")));
+
     public static void setCookie(HttpExchange ex, String name, String value, int maxAgeSeconds) {
+        String secure = SECURE_COOKIES ? "; Secure" : "";
         ex.getResponseHeaders().add("Set-Cookie",
-                name + "=" + value + "; HttpOnly; Path=/; Max-Age=" + maxAgeSeconds + "; SameSite=Lax");
+                name + "=" + value + "; HttpOnly; Path=/; Max-Age=" + maxAgeSeconds + "; SameSite=Lax" + secure);
+    }
+
+    /**
+     * The client's IP as best we can tell it. Honours {@code X-Forwarded-For} first so a
+     * reverse-proxy deployment doesn't collapse every real client to the proxy's IP,
+     * then falls back to the direct socket address.
+     */
+    public static String remoteIp(HttpExchange ex) {
+        List<String> xff = ex.getRequestHeaders().get("X-Forwarded-For");
+        if (xff != null && !xff.isEmpty()) {
+            String first = xff.get(0);
+            if (first != null && !first.isEmpty()) {
+                int comma = first.indexOf(',');
+                return (comma < 0 ? first : first.substring(0, comma)).trim();
+            }
+        }
+        return ex.getRemoteAddress() == null ? "" : ex.getRemoteAddress().getAddress().getHostAddress();
     }
 
     public static void sendJson(HttpExchange ex, int status, Object body) throws IOException {

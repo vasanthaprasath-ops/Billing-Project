@@ -59,6 +59,17 @@ function fmtNum(v) {
 function money(v) { return store.currency + " " + fmtNum(v); }
 function fmtQty(q) { q = Number(q || 0); return Number.isInteger(q) ? String(q) : String(q); }
 
+/** Returns a wrapped fn that only fires after `ms` of quiet - swap into keystroke handlers
+ *  that rebuild large HTML strings so a fast typist doesn't cause a paint per key. */
+function debounced(fn, ms) {
+    let t = null;
+    return function () {
+        const ctx = this, args = arguments;
+        if (t) clearTimeout(t);
+        t = setTimeout(() => fn.apply(ctx, args), ms);
+    };
+}
+
 function buildQuery(params) {
     const parts = [];
     for (const k in params) {
@@ -666,7 +677,10 @@ function renderBilling() {
             </div>
         </div>`;
 
-    document.getElementById("posSearch").addEventListener("input", e => renderProductGrid(e.target.value));
+    // Debounce the search-driven grid rebuild: at 10k items the string-concat + DOM parse
+    // per keystroke shows up as a visible stutter, and none of the intermediate keystrokes
+    // are worth a full paint anyway.
+    document.getElementById("posSearch").addEventListener("input", debounced(e => renderProductGrid(e.target.value), 120));
     document.getElementById("clearCartBtn").addEventListener("click", confirmClearCart);
     document.getElementById("discount").addEventListener("input", renderTotals);
     document.getElementById("cashPaid").addEventListener("input", renderTotals);
@@ -984,7 +998,7 @@ function renderProducts(filter) {
         </table></div></div>`;
 
     const search = document.getElementById("prodSearch");
-    search.addEventListener("input", e => renderProducts(e.target.value));
+    search.addEventListener("input", debounced(e => renderProducts(e.target.value), 120));
     search.focus();
     search.setSelectionRange(search.value.length, search.value.length);
     document.getElementById("lowStockToggle").onchange = e => {

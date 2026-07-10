@@ -9,16 +9,20 @@ import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
 
 /**
- * Password hashing (PBKDF2WithHmacSHA256, salted, 120k iterations) and random
+ * Password hashing (PBKDF2WithHmacSHA256, salted, 600k iterations) and random
  * token generation, using only the JDK's built-in {@code javax.crypto} - no
  * extra dependency needed.
  *
- * Stored form: {@code iterations:base64(salt):base64(hash)}.
+ * <p>Stored form: {@code iterations:base64(salt):base64(hash)}. The iteration
+ * count is embedded in every hash, so existing accounts continue to verify
+ * against their original cost and only new hashes (created here) use the
+ * higher target - matching OWASP's 2023 minimum without invalidating anyone.
  */
 public final class PasswordHasher {
 
-    private static final int ITERATIONS = 120_000;
+    private static final int ITERATIONS = 600_000;
     private static final int KEY_LENGTH_BITS = 256;
+    private static final byte[] DECOY_SALT = new byte[16];
     private static final SecureRandom RNG = new SecureRandom();
 
     private PasswordHasher() {
@@ -48,6 +52,19 @@ public final class PasswordHasher {
         } catch (RuntimeException e) {
             return false;
         }
+    }
+
+    /**
+     * Runs PBKDF2 with the current cost and discards the result - used by
+     * {@code UserService.authenticate} on an unknown user so /api/auth/login's
+     * response time doesn't shrink to milliseconds and hand an attacker a
+     * side-channel to enumerate valid usernames.
+     */
+    public static void warmUp(String password) {
+        if (password == null) {
+            return;
+        }
+        pbkdf2(password, DECOY_SALT, ITERATIONS);
     }
 
     /** A random, easy-to-type password for first-run bootstrap (unambiguous characters only). */

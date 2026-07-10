@@ -8,12 +8,36 @@ import java.util.concurrent.ConcurrentHashMap;
  * Keeps signed-in sessions in memory (this is a single-process server; there
  * is nothing else to share them with). Sessions expire automatically after
  * {@link #TTL_HOURS} of being issued.
+ *
+ * <p>A daemon sweeper prunes expired entries every 5 minutes; without it the
+ * map only shrank when someone happened to reuse an expired token (rare in
+ * practice - closed browser tabs never come back), so it leaked one entry per
+ * sign-in on a 24/7 POS.
  */
 public final class SessionManager {
 
     private static final long TTL_HOURS = 12;
+    private static final long SWEEP_INTERVAL_MS = 5 * 60 * 1000L;
 
     private final ConcurrentHashMap<String, Session> sessions = new ConcurrentHashMap<>();
+
+    public SessionManager() {
+        Thread sweeper = new Thread(this::sweepLoop, "session-sweeper");
+        sweeper.setDaemon(true);
+        sweeper.start();
+    }
+
+    private void sweepLoop() {
+        while (!Thread.currentThread().isInterrupted()) {
+            try {
+                Thread.sleep(SWEEP_INTERVAL_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            sessions.values().removeIf(Session::isExpired);
+        }
+    }
 
     public Session create(String username) {
         String token = PasswordHasher.randomToken();

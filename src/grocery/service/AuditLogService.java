@@ -18,6 +18,8 @@ import grocery.model.Role;
 import grocery.model.User;
 import grocery.util.Csv;
 import grocery.util.Db;
+import grocery.util.Log;
+import grocery.util.Time;
 
 /**
  * Append-only trail of who did what. Once multiple people can sign in and
@@ -43,12 +45,12 @@ public class AuditLogService {
     }
 
     public void log(User actor, String action, String details) {
-        append(new AuditEntry(LocalDateTime.now(), actor.getUsername(), actor.getRole(),
+        append(new AuditEntry(Time.now(), actor.getUsername(), actor.getRole(),
                 actor.getBranchId(), action, details));
     }
 
     public void logSystem(String action, String details) {
-        append(new AuditEntry(LocalDateTime.now(), "system", null, null, action, details));
+        append(new AuditEntry(Time.now(), "system", null, null, action, details));
     }
 
     /** Most recent entries first, capped at {@code max}, optionally scoped to one branch. */
@@ -93,7 +95,7 @@ public class AuditLogService {
         try {
             when = LocalDateTime.parse(rs.getString("when"), STAMP);
         } catch (RuntimeException e) {
-            when = LocalDateTime.now();
+            when = Time.now();
         }
         String roleStr = rs.getString("role");
         Role role = roleStr == null || roleStr.isEmpty() ? null : Role.parse(roleStr);
@@ -133,7 +135,7 @@ public class AuditLogService {
                 out.add(new AuditEntry(when, f.get(1), role, branchId, f.get(4), f.get(5)));
             }
         } catch (IOException e) {
-            System.err.println("Could not parse legacy audit_log.csv: " + e.getMessage());
+            Log.warn("Could not parse legacy audit_log.csv: " + e.getMessage(), e);
         }
         Collections.sort(out, (a, b) -> a.getWhen().compareTo(b.getWhen()));
         return out;

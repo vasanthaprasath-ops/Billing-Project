@@ -10,6 +10,8 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+
+import grocery.util.Time;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -80,15 +82,18 @@ public class InvoiceStore {
                                               String customerPhone, String paymentMode,
                                               List<InvoiceLine> lines, BigDecimal discount,
                                               BigDecimal amountPaid) {
-        Invoice invoice = new Invoice(nextInvoiceNoLocked(), branchId, cashierUsername, LocalDateTime.now(),
+        Invoice invoice = new Invoice(nextInvoiceNoLocked(), branchId, cashierUsername, Time.now(),
                 customerName, customerPhone, paymentMode, lines, discount, amountPaid);
-        invoices.add(invoice);
+        // Persist first; only mint the in-memory record once the transaction commits.
+        // The previous order let a rolled-back invoice leave a ghost in the list, which
+        // permanently skewed nextInvoiceNoLocked() by consuming that number.
         db.inTransaction(() -> {
             insertHeader(invoice);
             for (InvoiceLine line : invoice.getLines()) {
                 insertLine(invoice.getInvoiceNo(), line);
             }
         });
+        invoices.add(invoice);
         return invoice;
     }
 
@@ -187,7 +192,7 @@ public class InvoiceStore {
         try {
             return LocalDateTime.parse(s, STAMP);
         } catch (RuntimeException e) {
-            return LocalDateTime.now();
+            return Time.now();
         }
     }
 
@@ -225,7 +230,7 @@ public class InvoiceStore {
                 linesByInvoice.computeIfAbsent(f.get(0), k -> new ArrayList<>()).add(line);
             }
         } catch (IOException e) {
-            System.err.println("Could not parse legacy invoice_lines.csv: " + e.getMessage());
+            grocery.util.Log.warn("Could not parse legacy invoice_lines.csv: " + e.getMessage(), e);
             return out;
         }
 
@@ -253,7 +258,7 @@ public class InvoiceStore {
                 }
             }
         } catch (IOException e) {
-            System.err.println("Could not parse legacy invoices.csv: " + e.getMessage());
+            grocery.util.Log.warn("Could not parse legacy invoices.csv: " + e.getMessage(), e);
         }
         return out;
     }

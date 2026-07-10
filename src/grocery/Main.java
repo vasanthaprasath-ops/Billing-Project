@@ -55,22 +55,58 @@ public class Main {
      * environment variable (so port-assigning launchers work out of the box), then 8080.
      */
     private static int resolvePort(String[] args) {
+        // Explicit arg wins. Anything that looks numeric but is out of range fails loud
+        // instead of falling through to 8080 - a silent bind on the wrong port was the
+        // kind of surprise that used to end an ops session with two servers fighting.
         for (String a : args) {
-            if (a.matches("\\d+")) {
-                return Integer.parseInt(a);
+            if (a == null || a.startsWith("--")) {
+                continue;
+            }
+            int p = parsePort(a, "argument");
+            if (p > 0) {
+                return p;
             }
         }
         String env = System.getenv("PORT");
-        if (env != null && env.matches("\\d+")) {
-            return Integer.parseInt(env);
+        if (env != null && !env.isEmpty()) {
+            int p = parsePort(env, "PORT env var");
+            if (p > 0) {
+                return p;
+            }
         }
         return 8080;
+    }
+
+    private static int parsePort(String raw, String where) {
+        String s = raw.trim();
+        if (s.isEmpty()) {
+            return -1;
+        }
+        int p;
+        try {
+            p = Integer.parseInt(s);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("Port from " + where + " must be a number: '" + raw + "'");
+        }
+        if (p < 1 || p > 65535) {
+            throw new IllegalArgumentException("Port from " + where + " must be in 1..65535: " + p);
+        }
+        return p;
     }
 
     private static AppContext buildContext() {
         DATA_DIR.mkdirs();
         INVOICES_DIR.mkdirs();
         StoreConfig store = new StoreConfig(STORE_FILE);
+        // Pin every wall-clock read (invoice timestamps, day boundaries, daily-backup
+        // rollover) to the shop's local time - regardless of whether the JVM was
+        // launched under UTC, IST, or something else.
+        try {
+            grocery.util.Time.setZone(java.time.ZoneId.of(store.getTimezone()));
+        } catch (java.time.DateTimeException e) {
+            grocery.util.Log.warn("Invalid timezone '" + store.getTimezone() + "' in store.properties; using Asia/Kolkata");
+        }
+        grocery.util.Log.init(new File(DATA_DIR, "logs"));
 
         SqliteMigration.migrateIfNeeded(DATA_DIR, DB_FILE);
         Db db;
@@ -90,8 +126,8 @@ public class Main {
         AuditLogService auditLog = new AuditLogService(db);
         SessionManager sessions = new SessionManager();
         LoginRateLimiter loginRateLimiter = new LoginRateLimiter();
-        BackupService backup = new BackupService(db, DATA_DIR);
-        BillingService billing = new BillingService();
+        BackupService backup = new BackupService(db, DATA_DIR, auditLog);
+        BillingService billing = new BillingService(db);
         InvoicePdfGenerator pdf = new InvoicePdfGenerator(store);
         ThermalReceiptPdfGenerator thermalPdf = new ThermalReceiptPdfGenerator(store);
 
@@ -188,7 +224,7 @@ public class Main {
             System.out.println("Backup zip size: " + backupZip.length + " bytes");
         } catch (Exception e) {
             System.out.println("Demo FAILED: " + e.getMessage());
-            e.printStackTrace();
+            grocery.util.Log.error("Demo run failed", e);
         }
     }
 }

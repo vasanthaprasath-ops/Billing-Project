@@ -26,11 +26,20 @@ public final class LoginRateLimiter {
     static final Duration WINDOW = Duration.ofMinutes(15);
     static final Duration LOCKOUT = Duration.ofMinutes(15);
 
+    // A single IP failing across many usernames still gets throttled - the per-user
+    // limit alone let an attacker spray 5 attempts each against a dozen accounts
+    // unchallenged. Set well above what a legit shared-tablet cashier would ever
+    // hit in a shift so a normal wrong-password day doesn't lock the whole till.
+    static final int IP_MAX_ATTEMPTS = 30;
+    static final Duration IP_WINDOW = Duration.ofMinutes(15);
+    static final Duration IP_LOCKOUT = Duration.ofMinutes(5);
+
     private final Map<String, Deque<Instant>> failures = new HashMap<>();
+    private final Map<String, Deque<Instant>> ipFailures = new HashMap<>();
 
     /** Time until the account can try again, or {@link Duration#ZERO} if not locked. */
     public synchronized Duration lockoutRemaining(String username) {
-        Deque<Instant> hits = pruneAndGet(username, Instant.now());
+        Deque<Instant> hits = pruneAndGet(failures, key(username), Instant.now(), WINDOW);
         if (hits == null || hits.size() < MAX_ATTEMPTS) {
             return Duration.ZERO;
         }
@@ -39,14 +48,20 @@ public final class LoginRateLimiter {
         return left.isNegative() ? Duration.ZERO : left;
     }
 
-    public synchronized void recordFailure(String username) {
-        String key = key(username);
-        if (key == null) {
-            return;
+    /** Time until this IP can try again, or {@link Duration#ZERO}. */
+    public synchronized Duration ipLockoutRemaining(String ip) {
+        Deque<Instant> hits = pruneAndGet(ipFailures, ipKey(ip), Instant.now(), IP_WINDOW);
+        if (hits == null || hits.size() < IP_MAX_ATTEMPTS) {
+            return Duration.ZERO;
         }
-        Deque<Instant> hits = failures.computeIfAbsent(key, k -> new ArrayDeque<>());
-        prune(hits, Instant.now());
-        hits.addLast(Instant.now());
+        Instant unlock = hits.peekLast().plus(IP_LOCKOUT);
+        Duration left = Duration.between(Instant.now(), unlock);
+        return left.isNegative() ? Duration.ZERO : left;
+    }
+
+    public synchronized void recordFailure(String username, String ip) {
+        record(failures, key(username), WINDOW);
+        record(ipFailures, ipKey(ip), IP_WINDOW);
     }
 
     public synchronized void recordSuccess(String username) {
@@ -56,25 +71,34 @@ public final class LoginRateLimiter {
         }
     }
 
-    private Deque<Instant> pruneAndGet(String username, Instant now) {
-        String key = key(username);
+    private void record(Map<String, Deque<Instant>> store, String key, Duration window) {
+        if (key == null) {
+            return;
+        }
+        Deque<Instant> hits = store.computeIfAbsent(key, k -> new ArrayDeque<>());
+        prune(hits, Instant.now(), window);
+        hits.addLast(Instant.now());
+    }
+
+    private Deque<Instant> pruneAndGet(Map<String, Deque<Instant>> store, String key,
+                                       Instant now, Duration window) {
         if (key == null) {
             return null;
         }
-        Deque<Instant> hits = failures.get(key);
+        Deque<Instant> hits = store.get(key);
         if (hits == null) {
             return null;
         }
-        prune(hits, now);
+        prune(hits, now, window);
         if (hits.isEmpty()) {
-            failures.remove(key);
+            store.remove(key);
             return null;
         }
         return hits;
     }
 
-    private void prune(Deque<Instant> hits, Instant now) {
-        Instant cutoff = now.minus(WINDOW);
+    private void prune(Deque<Instant> hits, Instant now, Duration window) {
+        Instant cutoff = now.minus(window);
         for (Iterator<Instant> it = hits.iterator(); it.hasNext(); ) {
             if (it.next().isBefore(cutoff)) {
                 it.remove();
@@ -89,6 +113,14 @@ public final class LoginRateLimiter {
             return null;
         }
         String t = username.trim().toLowerCase(java.util.Locale.ROOT);
+        return t.isEmpty() ? null : t;
+    }
+
+    private String ipKey(String ip) {
+        if (ip == null) {
+            return null;
+        }
+        String t = ip.trim();
         return t.isEmpty() ? null : t;
     }
 }

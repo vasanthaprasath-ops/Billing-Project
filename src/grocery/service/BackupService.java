@@ -5,11 +5,16 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
-import java.time.LocalDate;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 import grocery.util.Db;
+import grocery.util.Log;
+import grocery.util.Time;
 
 /**
  * {@code freshmart.db} plus {@code store.properties} together ARE the
@@ -27,11 +32,15 @@ public class BackupService {
     private final Db db;
     private final File dataDir;
     private final File backupsDir;
+    private final AuditLogService auditLog;
+    /** Non-null when the most recent daily-backup attempt failed - surfaces to admins on next login. */
+    private volatile String lastFailure;
 
-    public BackupService(Db db, File dataDir) {
+    public BackupService(Db db, File dataDir, AuditLogService auditLog) {
         this.db = db;
         this.dataDir = dataDir;
         this.backupsDir = new File(dataDir, "backups");
+        this.auditLog = auditLog;
     }
 
     /** A fresh zip of {@code freshmart.db} + {@code store.properties} for on-demand download. */
@@ -41,7 +50,7 @@ public class BackupService {
             throw new IOException("Could not prepare scratch path for backup: " + scratch);
         }
         try {
-            db.exec("VACUUM INTO " + sqlLiteral(scratch.getPath()));
+            vacuumInto(scratch);
             ByteArrayOutputStream bos = new ByteArrayOutputStream();
             try (ZipOutputStream zos = new ZipOutputStream(bos)) {
                 zos.putNextEntry(new ZipEntry("freshmart.db"));
@@ -63,20 +72,58 @@ public class BackupService {
     /** Take a dated copy of the database once per day, so a bad edit or accidental delete is always recoverable. */
     public void takeDailyBackupIfNeeded() {
         try {
-            File todayFolder = new File(backupsDir, LocalDate.now().toString());
+            File todayFolder = new File(backupsDir, Time.today().toString());
             File dbCopy = new File(todayFolder, "freshmart.db");
             if (dbCopy.exists()) {
                 return; // already backed up today
             }
             todayFolder.mkdirs();
-            db.exec("VACUUM INTO " + sqlLiteral(dbCopy.getPath()));
+            vacuumInto(dbCopy);
             File storeProps = new File(dataDir, "store.properties");
             if (storeProps.isFile()) {
                 Files.copy(storeProps.toPath(), new File(todayFolder, "store.properties").toPath(),
                         StandardCopyOption.REPLACE_EXISTING);
             }
+            lastFailure = null;
         } catch (IOException | RuntimeException e) {
-            System.err.println("Could not take daily backup: " + e.getMessage());
+            String msg = "Could not take daily backup: " + e.getMessage();
+            Log.error(msg, e);
+            lastFailure = e.getMessage();
+            // Persist the failure so an operator scanning the audit log can see the
+            // store's safety net misfired even if no one was watching the console.
+            if (auditLog != null) {
+                try {
+                    auditLog.logSystem("BACKUP_FAILED", e.getMessage());
+                } catch (RuntimeException ignore) {
+                    // audit-log write itself is best-effort here
+                }
+            }
+        }
+    }
+
+    /**
+     * The message from the most recent daily-backup failure, or {@code null} if the last
+     * attempt succeeded (or none has run yet). Read by the admin panel to surface a banner
+     * instead of relying on someone tailing {@code data/logs/app.log}.
+     */
+    public String lastFailure() {
+        return lastFailure;
+    }
+
+    /**
+     * Runs {@code VACUUM INTO} on a private connection so it doesn't hold the
+     * app's shared {@link Db} monitor - a big DB used to freeze every till for
+     * the whole backup, since every checkout/scan/dashboard call serializes on
+     * that single connection. WAL mode lets us open a second connection to the
+     * same file safely.
+     */
+    private void vacuumInto(File dest) throws IOException {
+        String url = "jdbc:sqlite:" + db.file().getPath();
+        try (Connection c = DriverManager.getConnection(url);
+             Statement st = c.createStatement()) {
+            st.execute("VACUUM INTO " + sqlLiteral(dest.getPath()));
+        } catch (SQLException e) {
+            throw new IOException("VACUUM INTO failed: " + e.getMessage(), e);
         }
     }
 

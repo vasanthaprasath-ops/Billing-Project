@@ -26,8 +26,11 @@ import grocery.model.Role;
 import grocery.model.User;
 import grocery.service.BillingService;
 import grocery.service.RefundService;
+import grocery.util.CorrelationId;
+import grocery.util.Log;
 import grocery.util.Money;
 import grocery.util.Text;
+import grocery.util.Time;
 
 /** Routes and handles all {@code /api/...} requests. */
 public class ApiHandler implements HttpHandler {
@@ -49,7 +52,14 @@ public class ApiHandler implements HttpHandler {
         } catch (IllegalStateException | IllegalArgumentException e) {
             Http.sendError(ex, 400, e.getMessage());
         } catch (Exception e) {
-            Http.sendError(ex, 500, "Server error: " + e.getMessage());
+            // Never surface a raw JDBC/IO exception to the client - it can carry SQL
+            // fragments, schema hints or filesystem paths. Log the full stack with a
+            // correlation id and hand only the id back so an operator can grep it out
+            // of data/logs/app.log.
+            String cid = CorrelationId.next();
+            Log.error("Unhandled server error [" + cid + "] " + ex.getRequestMethod() + " "
+                    + ex.getRequestURI().getPath(), e);
+            Http.sendError(ex, 500, "Server error (ref: " + cid + ")");
         }
     }
 
@@ -140,6 +150,16 @@ public class ApiHandler implements HttpHandler {
         if (req == null || req.username == null || req.password == null) {
             throw new IllegalArgumentException("Username and password are required.");
         }
+        String ip = Http.remoteIp(ex);
+        // IP throttle fires first: one attacker spraying many usernames still gets stopped
+        // even though no single username has hit its own 5-attempt cap.
+        java.time.Duration ipWait = ctx.loginRateLimiter().ipLockoutRemaining(ip);
+        if (!ipWait.isZero()) {
+            ctx.auditLog().logSystem("LOGIN_IP_LOCKED", "ip=" + ip
+                    + " retry in " + Math.max(1, ipWait.toMinutes()) + "m");
+            throw new ApiException(429, "Too many failed attempts. Try again in about "
+                    + Math.max(1, ipWait.toMinutes()) + " minute(s).");
+        }
         java.time.Duration wait = ctx.loginRateLimiter().lockoutRemaining(req.username);
         if (!wait.isZero()) {
             ctx.auditLog().logSystem("LOGIN_LOCKED", "username=" + req.username
@@ -149,8 +169,8 @@ public class ApiHandler implements HttpHandler {
         }
         User user = ctx.users().authenticate(req.username, req.password);
         if (user == null) {
-            ctx.loginRateLimiter().recordFailure(req.username);
-            ctx.auditLog().logSystem("LOGIN_FAILED", "username=" + req.username);
+            ctx.loginRateLimiter().recordFailure(req.username, ip);
+            ctx.auditLog().logSystem("LOGIN_FAILED", "username=" + req.username + " ip=" + ip);
             throw new ApiException(401, "Invalid username or password.");
         }
         ctx.loginRateLimiter().recordSuccess(user.getUsername());
@@ -326,7 +346,7 @@ public class ApiHandler implements HttpHandler {
         requireRole(user, Role.ADMIN);
         byte[] zip = ctx.backup().zipData();
         ctx.auditLog().log(user, "BACKUP_DOWNLOAD", zip.length + " bytes");
-        String filename = "freshmart-backup-" + java.time.LocalDate.now() + ".zip";
+        String filename = "freshmart-backup-" + Time.today() + ".zip";
         ex.getResponseHeaders().set("Content-Disposition", "attachment; filename=\"" + filename + "\"");
         Http.sendBytes(ex, 200, "application/zip", zip);
     }
@@ -421,13 +441,33 @@ public class ApiHandler implements HttpHandler {
         Http.sendJson(ex, 200, Mappers.invoice(inv, ctx.branches()));
     }
 
+    private static final java.util.regex.Pattern SAFE_INVOICE_NO =
+            java.util.regex.Pattern.compile("[A-Za-z][A-Za-z0-9_-]{0,63}");
+
     private void handleInvoicePdf(HttpExchange ex, User user, String no) throws IOException {
         Invoice inv = requireInvoiceInScope(user, no);
+        // Defence in depth: even though the invoice number came from the DB, a legacy CSV
+        // migration could have imported one containing "../" or path separators, and this
+        // handler concatenates it straight into a filesystem path. Reject anything that
+        // isn't a plain [A-Za-z][A-Za-z0-9_-]{0,63} token and then re-canonicalise the
+        // final path is still inside invoicesDir - either check on its own would have
+        // caught the escape, but they combine to leave no room for a surprise.
+        String invoiceNo = inv.getInvoiceNo();
+        if (!SAFE_INVOICE_NO.matcher(invoiceNo).matches()) {
+            throw ApiException.notFound("Invoice not found: " + no);
+        }
         boolean thermal = "thermal".equalsIgnoreCase(Http.queryParams(ex).get("format"));
-        File pdf = new File(invoicesDir, inv.getInvoiceNo() + (thermal ? "-thermal.pdf" : ".pdf"));
+        File pdf = new File(invoicesDir, invoiceNo + (thermal ? "-thermal.pdf" : ".pdf"));
+        java.nio.file.Path dirPath = invoicesDir.getCanonicalFile().toPath();
+        if (!pdf.getCanonicalFile().toPath().startsWith(dirPath)) {
+            throw ApiException.notFound("Invoice not found: " + no);
+        }
         if (!pdf.exists()) {
             pdf = thermal ? ctx.thermalPdfGenerator().generate(inv, invoicesDir)
                     : ctx.pdfGenerator().generate(inv, invoicesDir);
+            if (!pdf.getCanonicalFile().toPath().startsWith(dirPath)) {
+                throw ApiException.notFound("Invoice not found: " + no);
+            }
         }
         ex.getResponseHeaders().set("Content-Disposition", "inline; filename=\"" + pdf.getName() + "\"");
         Http.sendBytes(ex, 200, "application/pdf", Files.readAllBytes(pdf.toPath()));
@@ -449,20 +489,38 @@ public class ApiHandler implements HttpHandler {
         if (req == null) {
             throw new IllegalArgumentException("Missing checkout data.");
         }
+        // Sanitize the money fields at the boundary: NaN, +/-Infinity or absurd magnitudes
+        // slip through BigDecimal.valueOf and produce garbage invoices. Reject at the door.
+        double discount = sanitizeMoney(req.discount, "discount");
+        double paid = sanitizeMoney(req.amountPaid, "amount paid");
         String branchId = resolveBranchIdForBody(user, req.branchId);
         List<BillingService.LineRequest> lines = new ArrayList<>();
         if (req.lines != null) {
             for (Dtos.CheckoutLineDto l : req.lines) {
-                lines.add(new BillingService.LineRequest(l.itemId, l.quantity));
+                double qty = l.quantity;
+                if (!Double.isFinite(qty) || qty < 0 || qty > 1_000_000) {
+                    throw new IllegalArgumentException("Line quantity is out of range.");
+                }
+                lines.add(new BillingService.LineRequest(l.itemId, qty));
             }
         }
         Invoice invoice = ctx.billing().checkout(
                 branchId, user.getUsername(), req.customerName, req.customerPhone, req.paymentMode,
-                BigDecimal.valueOf(req.discount), BigDecimal.valueOf(req.amountPaid),
+                BigDecimal.valueOf(discount), BigDecimal.valueOf(paid),
                 lines, ctx.inventory(), ctx.invoiceStore());
         ctx.pdfGenerator().generate(invoice, invoicesDir); // pre-generate the A4 PDF
         ctx.auditLog().log(user, "CHECKOUT", invoice.getInvoiceNo() + " " + Money.format(invoice.getGrandTotal()));
         Http.sendJson(ex, 201, Mappers.invoice(invoice, ctx.branches()));
+    }
+
+    private static double sanitizeMoney(double v, String fieldName) {
+        if (!Double.isFinite(v)) {
+            throw new IllegalArgumentException(fieldName + " must be a finite number.");
+        }
+        if (v < 0 || v > 100_000_000) { // ten crore is well above any realistic bill
+            throw new IllegalArgumentException(fieldName + " is out of range.");
+        }
+        return v;
     }
 
     // ---------------- refunds ----------------
@@ -662,7 +720,7 @@ public class ApiHandler implements HttpHandler {
         Map<String, String> q = Http.queryParams(ex);
         LocalDate date = parseDate(q.get("date"));
         if (date == null) {
-            date = LocalDate.now();
+            date = Time.today();
         }
         String branchId = resolveBranchIdOrAll(ex, user);
 

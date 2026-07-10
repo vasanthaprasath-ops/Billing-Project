@@ -28,8 +28,11 @@ public class StaticHandler implements HttpHandler {
         }
 
         File file = new File(root, path).getCanonicalFile();
-        // Guard against path traversal outside the web root.
-        if (!file.getPath().startsWith(root.getCanonicalFile().getPath())
+        // Guard against path traversal outside the web root. String.startsWith was subtly
+        // wrong here: without a trailing separator it also matched a sibling directory whose
+        // name shared a prefix (e.g. cwd/webbackup/... startsWith cwd/web). Path.startsWith
+        // compares path segments, so it can't be tricked that way.
+        if (!file.toPath().startsWith(root.getCanonicalFile().toPath())
                 || !file.exists() || file.isDirectory()) {
             Http.sendError(ex, 404, "Not found: " + path);
             return;

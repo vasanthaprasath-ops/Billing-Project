@@ -67,6 +67,10 @@ public class UserService {
     public synchronized User authenticate(String username, String password) {
         User u = findByUsername(username);
         if (u == null || !u.isActive() || password == null) {
+            // Without this decoy, /api/auth/login for an unknown user returns in a few ms
+            // and for a wrong password takes ~150-600ms (the real PBKDF2 pass) - a clean
+            // timing side-channel for enumerating valid usernames. Same cost either way now.
+            PasswordHasher.warmUp(password);
             return null;
         }
         return PasswordHasher.verify(password, u.getPasswordHash()) ? u : null;
@@ -152,7 +156,7 @@ public class UserService {
                         Boolean.parseBoolean(f.get(5)), Boolean.parseBoolean(f.get(6))));
             }
         } catch (IOException e) {
-            System.err.println("Could not parse legacy users.csv: " + e.getMessage());
+            grocery.util.Log.warn("Could not parse legacy users.csv: " + e.getMessage(), e);
         }
         return out;
     }
