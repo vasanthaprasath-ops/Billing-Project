@@ -16,8 +16,11 @@
         <div class="field"><label for="loginUsername">Username</label>
             <input class="input" id="loginUsername" autocomplete="username" autofocus></div>
         <div class="field"><label for="loginPassword">Password</label>
-            <input class="input" id="loginPassword" type="password" autocomplete="current-password"></div>
-        <div id="loginError" class="login-error hidden"></div>
+            <div class="pw-wrap">
+                <input class="input" id="loginPassword" type="password" autocomplete="current-password">
+                <button type="button" class="pw-toggle" id="loginPwToggle" aria-label="Show password" aria-pressed="false">Show</button>
+            </div></div>
+        <div id="loginError" class="login-error hidden" role="alert"></div>
         <button class="btn btn-primary btn-block btn-lg" type="submit" id="loginSubmit">Sign In</button>
     </form>
 </div>
@@ -87,7 +90,7 @@
     </main>
 </div>
 
-<div id="toastRoot" class="toast-root"></div>
+<div id="toastRoot" class="toast-root" role="status" aria-live="polite" aria-atomic="false"></div>
 <div id="modalRoot"></div>
 
 <script src="/js/app.js"></script>

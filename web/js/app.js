@@ -137,16 +137,27 @@ function toast(msg, type = "info") {
     const root = document.getElementById("toastRoot");
     const t = document.createElement("div");
     t.className = "toast " + type;
+    t.title = "Dismiss";
     const ico = type === "success" ? "✓" : type === "error" ? "⚠" : "ℹ";
     t.innerHTML = `<span class="t-ico">${ico}</span><span class="t-msg"></span>`;
     t.querySelector(".t-msg").textContent = msg;
     root.appendChild(t);
-    setTimeout(() => {
+    // Fade-and-remove, shared by the auto-timeout and a click-to-dismiss - so an
+    // error a cashier needs to read stays until dismissed if they tap it, and
+    // several stacked toasts can be cleared without waiting them out one by one.
+    let done = false;
+    const dismiss = () => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
         t.style.transition = "all .3s";
         t.style.opacity = "0";
         t.style.transform = "translateX(20px)";
         setTimeout(() => t.remove(), 300);
-    }, 3200);
+    };
+    t.addEventListener("click", dismiss);
+    // Errors linger longer than success/info - they usually need action, not just a glance.
+    const timer = setTimeout(dismiss, type === "error" ? 6000 : 3200);
 }
 
 let modalLastFocused = null;
@@ -175,6 +186,7 @@ function openModal(html, opts) {
         document.addEventListener("keydown", escClose);
     }
     document.addEventListener("keydown", modalTrapFocus);
+    document.addEventListener("keydown", modalEnterSubmit);
     // Hide the rest of the app from assistive tech while the dialog is open - it's a
     // sibling of #modalRoot, not an ancestor, so this can't trap focus inside itself.
     document.getElementById("appRoot").setAttribute("aria-hidden", "true");
@@ -210,10 +222,35 @@ function modalTrapFocus(e) {
 }
 
 function escClose(e) { if (e.key === "Escape") closeModal(); }
+
+/**
+ * Enter, while focus is in a single-line field of the open modal, fires the
+ * modal's primary action - the same thing clicking the green (or red, for
+ * destructive dialogs) footer button would. This makes every data-entry dialog
+ * submittable from the keyboard without reaching for the mouse, which is what
+ * anyone typing a form expects. Textareas, selects and buttons keep their
+ * native Enter behaviour; a disabled primary button (e.g. a refund with nothing
+ * entered yet) is left alone.
+ */
+function modalEnterSubmit(e) {
+    if (e.key !== "Enter" || e.isComposing) return;
+    const overlay = document.querySelector("#modalRoot .modal-overlay");
+    if (!overlay) return;
+    const el = document.activeElement;
+    if (!el || !overlay.contains(el) || el.tagName !== "INPUT") return;
+    const type = (el.getAttribute("type") || "text").toLowerCase();
+    if (["button", "submit", "checkbox", "radio", "file"].includes(type)) return;
+    const primary = overlay.querySelector(".modal-foot .btn-primary, .modal-foot .btn-danger");
+    if (!primary || primary.disabled) return;
+    e.preventDefault();
+    primary.click();
+}
+
 function closeModal() {
     document.getElementById("modalRoot").innerHTML = "";
     document.removeEventListener("keydown", escClose);
     document.removeEventListener("keydown", modalTrapFocus);
+    document.removeEventListener("keydown", modalEnterSubmit);
     document.getElementById("appRoot").removeAttribute("aria-hidden");
     document.getElementById("loginScreen").removeAttribute("aria-hidden");
     if (modalLastFocused && document.contains(modalLastFocused)) {
@@ -777,7 +814,15 @@ function renderBilling() {
                         <div class="field"><label for="discount">Discount (${esc(store.currency)})</label>
                             <input class="input" id="discount" type="number" min="0" step="0.01" value="0"></div>
                         <div class="field" id="cashPaidField"><label for="cashPaid">Cash Tendered (${esc(store.currency)})</label>
-                            <input class="input" id="cashPaid" type="number" min="0" step="0.01" placeholder="Amount handed over by customer"></div>
+                            <input class="input" id="cashPaid" type="number" min="0" step="0.01" placeholder="Amount handed over by customer">
+                            <div class="tender-chips" id="tenderChips">
+                                <button type="button" class="chip" data-tender="exact">Exact</button>
+                                <button type="button" class="chip" data-tender="100">+100</button>
+                                <button type="button" class="chip" data-tender="200">+200</button>
+                                <button type="button" class="chip" data-tender="500">+500</button>
+                                <button type="button" class="chip" data-tender="2000">+2000</button>
+                                <button type="button" class="chip chip-clear" data-tender="clear">Clear</button>
+                            </div></div>
                     </div>
                     <div class="totals" id="cartTotals"></div>
                     <button class="btn btn-primary btn-block btn-lg" id="checkoutBtn" style="margin-top:14px">Checkout &amp; Print Invoice</button>
@@ -794,6 +839,21 @@ function renderBilling() {
     document.getElementById("cashPaid").addEventListener("input", renderTotals);
     document.getElementById("payMode").addEventListener("change", renderTotals);
     document.getElementById("checkoutBtn").addEventListener("click", doCheckout);
+
+    // Quick cash-tender chips: "Exact" fills the grand total (zero change), each
+    // note chip adds that denomination to what's already tendered (so two ₹500s
+    // handed over is two taps), and "Clear" resets. Faster and less error-prone
+    // than typing the amount while a customer waits at the counter.
+    const cashInput = document.getElementById("cashPaid");
+    document.querySelectorAll("#tenderChips .chip").forEach(chip =>
+        chip.addEventListener("click", () => {
+            const v = chip.dataset.tender;
+            if (v === "clear") cashInput.value = "";
+            else if (v === "exact") cashInput.value = String(cartGrandTotal());
+            else cashInput.value = String((parseFloat(cashInput.value) || 0) + Number(v));
+            renderTotals();
+            cashInput.focus();
+        }));
 
     const barcodeInput = document.getElementById("barcodeInput");
     barcodeInput.addEventListener("keydown", e => {
@@ -910,7 +970,7 @@ function renderCart() {
                 </div>
                 <div class="stepper">
                     <button type="button" data-act="dec" data-i="${i}" aria-label="Decrease quantity">−</button>
-                    <input data-i="${i}" value="${fmtQty(l.qty)}" aria-label="${esc(l.name)} quantity">
+                    <input data-i="${i}" value="${fmtQty(l.qty)}" inputmode="decimal" aria-label="${esc(l.name)} quantity">
                     <button type="button" data-act="inc" data-i="${i}" aria-label="Increase quantity">+</button>
                 </div>
                 <div class="cl-amt">${money(l.price * l.qty)}</div>
@@ -933,6 +993,13 @@ function currentDiscount() {
 function currentCashPaid() {
     const el = document.getElementById("cashPaid");
     return Math.max(0, parseFloat(el && el.value) || 0);
+}
+/** Grand total of the current cart (sub − discount + GST), rounded to the rupee -
+ *  the single source of truth for the checkout guard and the "Exact" tender chip. */
+function cartGrandTotal() {
+    let sub = 0, tax = 0;
+    cart.forEach(l => { const amt = l.price * l.qty; sub += amt; tax += amt * l.taxRatePercent / 100; });
+    return Math.round(Math.max(0, sub - currentDiscount() + tax));
 }
 
 function renderTotals() {
@@ -976,11 +1043,8 @@ async function doCheckout() {
     // committed the receipt would show 'change: -₹X' and reconcile wrong at day-end.
     const payMode = document.getElementById("payMode").value;
     const cashPaid = currentCashPaid();
-    if (payMode === "Cash" && cashPaid > 0) {
-        let sub = 0, tax = 0;
-        cart.forEach(l => { const amt = l.price * l.qty; sub += amt; tax += amt * l.taxRatePercent / 100; });
-        const grand = Math.round(Math.max(0, sub - currentDiscount() + tax));
-        if (cashPaid < grand) { toast("Cash tendered is less than the grand total", "error"); return; }
+    if (payMode === "Cash" && cashPaid > 0 && cashPaid < cartGrandTotal()) {
+        toast("Cash tendered is less than the grand total", "error"); return;
     }
     const btn = document.getElementById("checkoutBtn");
     btn.disabled = true;
@@ -1165,9 +1229,6 @@ function openProductModal(item) {
     document.getElementById("mCancel").onclick = closeModal;
     document.getElementById("mSave").onclick = () => withBusy(document.getElementById("mSave"),
         editing ? "Saving…" : "Adding…", () => saveProduct(editing, editing ? item.id : null));
-    document.getElementById("fBarcode").addEventListener("keydown", e => {
-        if (e.key === "Enter") { e.preventDefault(); document.getElementById("mSave").click(); }
-    });
     document.getElementById("fName").focus();
 }
 
@@ -1277,7 +1338,7 @@ function renderInvoices(all, filter) {
     wireInvoicesSubTabs();
     wirePeriodControl(view, loadInvoices);
     const s = document.getElementById("invSearch");
-    s.addEventListener("input", e => renderInvoices(all, e.target.value));
+    s.addEventListener("input", debounced(e => renderInvoices(all, e.target.value), 120));
     s.focus();
     s.setSelectionRange(s.value.length, s.value.length);
     view.querySelectorAll("button[data-pdf]").forEach(b =>
@@ -1824,6 +1885,16 @@ async function init() {
     document.querySelectorAll(".nav-item").forEach(b =>
         b.addEventListener("click", () => switchView(b.dataset.view)));
     document.getElementById("loginForm").addEventListener("submit", doLogin);
+    const pwToggle = document.getElementById("loginPwToggle");
+    pwToggle.addEventListener("click", () => {
+        const inp = document.getElementById("loginPassword");
+        const reveal = inp.type === "password";
+        inp.type = reveal ? "text" : "password";
+        pwToggle.textContent = reveal ? "Hide" : "Show";
+        pwToggle.setAttribute("aria-pressed", String(reveal));
+        pwToggle.setAttribute("aria-label", reveal ? "Hide password" : "Show password");
+        inp.focus();
+    });
     document.getElementById("logoutBtn").addEventListener("click", confirmLogout);
     document.getElementById("changePasswordBtn").addEventListener("click", () => openChangePasswordModal(false));
     // An in-progress bill lives only in memory - warn before an accidental tab close

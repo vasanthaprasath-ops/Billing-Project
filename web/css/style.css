@@ -219,7 +219,8 @@ body {
 .btn:disabled { opacity: .5; cursor: not-allowed; }
 .btn:focus-visible, .admin-tab:focus-visible, .period-btn:focus-visible,
 .nav-item:focus-visible, .modal-close:focus-visible, .stepper button:focus-visible,
-.cl-remove:focus-visible, .pc-add:focus-visible, .link-action:focus-visible {
+.cl-remove:focus-visible, .pc-add:focus-visible, .link-action:focus-visible,
+.pw-toggle:focus-visible, .tender-chips .chip:focus-visible {
     outline: 2px solid var(--green);
     outline-offset: 2px;
 }
@@ -561,6 +562,19 @@ tr.tbl-group-row td {
 .cl-remove { border: 0; background: none; color: var(--muted-2); cursor: pointer; font-size: 16px; padding: 2px 4px; }
 .cl-remove:hover { color: var(--red); }
 
+/* Quick cash-tender chips under the "Cash Tendered" field */
+.tender-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.tender-chips .chip {
+    border: 1px solid var(--border); background: var(--card); color: var(--ink);
+    font-size: 12.5px; font-weight: 600; padding: 5px 11px; border-radius: 8px;
+    cursor: pointer; font-family: inherit; transition: border-color .14s, color .14s, background .14s;
+    font-variant-numeric: tabular-nums;
+}
+.tender-chips .chip:hover { border-color: var(--green); color: var(--green-dark); }
+.tender-chips .chip:active { transform: translateY(1px); }
+.tender-chips .chip-clear { color: var(--muted); margin-left: auto; }
+.tender-chips .chip-clear:hover { border-color: var(--muted-2); color: var(--ink); }
+
 .totals { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 8px; }
 .total-row { display: flex; justify-content: space-between; font-size: 13.5px; padding: 3px 0; color: var(--muted); }
 .total-row span:last-child { color: var(--ink); font-variant-numeric: tabular-nums; }
@@ -661,6 +675,7 @@ tr.tbl-group-row td {
     box-shadow: var(--shadow-lg); font-size: 13.5px; font-weight: 500;
     display: flex; align-items: center; gap: 10px; min-width: 220px; max-width: 360px;
     animation: slidein .2s ease;
+    cursor: pointer;
 }
 .toast.success { background: #14532d; }
 .toast.error { background: #7f1d1d; }
@@ -700,6 +715,15 @@ tr.tbl-group-row td {
 .login-card h1 { margin: 0 0 2px; font-size: 21px; }
 .login-sub { color: var(--muted); font-size: 13px; margin-bottom: 22px; }
 .login-card .field { text-align: left; }
+.pw-wrap { position: relative; }
+.pw-wrap .input { padding-right: 62px; }
+.pw-toggle {
+    position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+    border: 0; background: none; cursor: pointer; font-size: 12px; font-weight: 700;
+    letter-spacing: .3px; text-transform: uppercase; padding: 5px 8px; line-height: 1;
+    color: var(--muted); border-radius: 6px;
+}
+.pw-toggle:hover { color: var(--green-dark); }
 .login-error {
     background: #fee2e2;
     color: var(--red);
