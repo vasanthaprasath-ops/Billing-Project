@@ -821,7 +821,6 @@ async function loadDashboard() {
                 ${periodControl()}
                 <button class="btn btn-primary btn-sm" id="qaNewBill">🧾 Start New Bill</button>
                 ${canManage ? `<button class="btn btn-sm" id="qaAddProduct">＋ Add Product</button>` : ""}
-                <button class="btn btn-ghost btn-sm" id="qaCustomize" title="Choose which cards appear on your dashboard">🎛️ Customize</button>
             </div>
         </div>
 
@@ -833,8 +832,7 @@ async function loadDashboard() {
             <div class="stack-16">${cols[2].join("")}</div>
         </div>
         ${gridBuckets.length === 0 && !showStats
-            ? `<div class="empty-state"><div class="big">🎛️</div>Your dashboard is empty.<br>
-                <button class="btn btn-primary" style="margin-top:14px" id="qaCustomize2">Choose what to show</button></div>`
+            ? `<div class="empty-state"><div class="big">🎛️</div>Your dashboard is empty. Turn cards on from Settings.</div>`
             : ""}`;
 
     // wire up the interactions
@@ -851,10 +849,6 @@ async function loadDashboard() {
         if (session.role === "ADMIN" && !currentBranchId) { toast("Pick a branch first", "error"); return; }
         openProductModal(null);
     });
-    const qaCustomize = document.getElementById("qaCustomize");
-    if (qaCustomize) qaCustomize.addEventListener("click", () => switchView("settings"));
-    const qaCustomize2 = document.getElementById("qaCustomize2");
-    if (qaCustomize2) qaCustomize2.addEventListener("click", () => switchView("settings"));
 }
 
 /* ============================================================
