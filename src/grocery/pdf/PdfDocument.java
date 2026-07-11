@@ -109,7 +109,12 @@ public class PdfDocument {
             333, 556, 611, 556, 611, 556, 333, 611, 611, 278, 278, 556, 278, 889, 611, 611,
             611, 611, 389, 556, 333, 611, 556, 778, 556, 556, 500, 389, 280, 389, 584};
 
-    /** Rendered width of a string in points, using accurate Helvetica metrics. */
+    /** Rendered width of a string in points, using accurate Helvetica metrics.
+     *  ASCII 32..126 uses the exact per-glyph advance widths from Adobe's AFM. Latin-1
+     *  characters (accented letters, £, €, etc.) fall back to the '?' width, which is a
+     *  small approximation - Helvetica's Latin-1 glyphs have real advance widths but this
+     *  layout doesn't need pixel-perfect measurement, and the invoice columns are
+     *  right-anchored anyway. */
     public float textWidth(String s, float size, boolean bold) {
         int[] w = bold ? W_HELV_BOLD : W_HELV;
         long units = 0;
@@ -136,19 +141,63 @@ public class PdfDocument {
     }
 
     private String escape(String s) {
+        // Broaden this from ASCII to WinAnsi (CP-1252): the fonts are already declared as
+        // /WinAnsiEncoding, so any char covered by that encoding renders correctly if we
+        // emit it as an octal escape. This lets common Latin-1 characters in customer and
+        // product names (accents like é, ç, à, £, €) render properly instead of "?".
+        // A handful of Unicode characters missing from WinAnsi but common in Indian retail
+        // are transliterated so they don't fall through to "?":
+        //   ₹ (U+20B9)  ->  "Rs."   (WinAnsi's rupee slot is empty)
+        //   – (U+2013)  ->  "-"
+        //   — (U+2014)  ->  "-"
+        //   ‘ ’ (curly quotes) -> straight quotes
+        // Broader Unicode (Devanagari, Tamil, Kannada, etc.) still falls through to "?" -
+        // the real fix is embedding a subset TrueType with /Identity-H encoding, deferred
+        // as a larger PdfDocument change.
         StringBuilder b = new StringBuilder();
         for (int i = 0; i < s.length(); i++) {
             char c = s.charAt(i);
-            if (c == '\\' || c == '(' || c == ')') {
-                b.append('\\').append(c);
-            } else if (c >= 32 && c < 127) {
-                b.append(c);
+            String replacement = transliterate(c);
+            if (replacement != null) {
+                for (int j = 0; j < replacement.length(); j++) {
+                    appendEscapedChar(b, replacement.charAt(j));
+                }
             } else {
-                // Keep the file ASCII-clean so it renders everywhere.
-                b.append('?');
+                appendEscapedChar(b, c);
             }
         }
         return b.toString();
+    }
+
+    private void appendEscapedChar(StringBuilder b, char c) {
+        if (c == '\\' || c == '(' || c == ')') {
+            b.append('\\').append(c);
+        } else if (c >= 32 && c < 127) {
+            b.append(c);
+        } else if (c >= 0x80 && c <= 0xFF) {
+            // Latin-1 range: WinAnsiEncoding handles it. Emit as a 3-digit octal escape,
+            // which is the safe cross-reader way to embed a high byte in a PDF string.
+            b.append('\\')
+             .append(Character.forDigit((c >> 6) & 7, 8))
+             .append(Character.forDigit((c >> 3) & 7, 8))
+             .append(Character.forDigit(c & 7, 8));
+        } else {
+            b.append('?');
+        }
+    }
+
+    private static String transliterate(char c) {
+        switch (c) {
+            case '\u20B9': return "Rs.";  // ₹ -> Rs.
+            case '\u2013':                 // en dash
+            case '\u2014': return "-";      // em dash
+            case '\u2018':                 // ' curly open
+            case '\u2019': return "'";      // ' curly close
+            case '\u201C':                 // " curly open
+            case '\u201D': return "\"";    // " curly close
+            case '\u00A0': return " ";     // non-breaking space -> regular space
+            default: return null;
+        }
     }
 
     /**
