@@ -43,6 +43,7 @@ public class StaticHandler implements HttpHandler {
         // a hard refresh. Browsers apply their own heuristic caching to any response with no
         // explicit freshness info, which is exactly what was silently happening before this.
         ex.getResponseHeaders().set("Cache-Control", "no-store");
+        // sendBytes() attaches the security headers (nosniff/frame-DENY/CSP/etc.) uniformly.
         byte[] bytes = Files.readAllBytes(file.toPath());
         Http.sendBytes(ex, 200, contentType(file.getName()), bytes);
     }

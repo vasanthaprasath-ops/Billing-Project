@@ -111,6 +111,15 @@ public class BackupService {
     }
 
     /**
+     * Validate an uploaded backup zip and stage it for restore on the next restart.
+     * See {@link SqliteRestore} for why restore is a stage-then-restart operation rather than
+     * a live file swap. Throws {@link IllegalArgumentException} if the zip isn't a real backup.
+     */
+    public String stageRestore(byte[] zipBytes) throws IOException {
+        return SqliteRestore.stage(dataDir, zipBytes);
+    }
+
+    /**
      * Runs {@code VACUUM INTO} on a private connection so it doesn't hold the
      * app's shared {@link Db} monitor - a big DB used to freeze every till for
      * the whole backup, since every checkout/scan/dashboard call serializes on

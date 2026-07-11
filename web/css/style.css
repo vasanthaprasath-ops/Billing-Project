@@ -822,6 +822,21 @@ tr.tbl-group-row td {
 .settings-card { max-width: 680px; }
 .settings-card .card-body { display: flex; flex-direction: column; gap: 4px; }
 
+/* Dashboard-customization bucket list */
+.bucket-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.bucket-row {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px;
+    background: var(--card); cursor: grab;
+    transition: box-shadow .14s, transform .14s;
+}
+.bucket-row:hover { box-shadow: var(--shadow); }
+.bucket-row.dragging { opacity: .6; cursor: grabbing; box-shadow: var(--shadow-lg); }
+.drag-grip { color: var(--muted-2); font-size: 18px; user-select: none; line-height: 1; }
+.bucket-label { font-weight: 600; font-size: 14px; }
+.bucket-row .check-inline { align-items: flex-start; gap: 10px; }
+.bucket-row .check-inline input { margin-top: 3px; }
+
 /* ---------------- Responsive ---------------- */
 /* Between 1024px and 1279px the three-column dash gets cramped - fall to 2 columns
    (the third column stacks under the first two) before collapsing entirely below 1024px. */
@@ -871,9 +886,31 @@ tr.tbl-group-row td {
    Overrides the light-mode CSS variables and any hardcoded backgrounds so the
    whole content area, modals, tables, inputs, and status pills read cleanly on
    a dark canvas. The sidebar (dark green) and login screen (green gradient)
-   already look right at night; only the main surface flips. */
+   already look right at night; only the main surface flips.
+
+   Fires on EITHER the OS-level dark preference OR our own [data-theme="dark"]
+   override, so users can force dark even on a light OS. [data-theme="light"]
+   below wins over both, so users can force light even on a dark OS. */
+/* [data-theme="dark"]: force dark palette regardless of OS. Sets the same vars as the
+   media-query block below. Users can still opt out via [data-theme="light"], which the
+   media block below explicitly excludes. Per-element dark overrides in the media block
+   still fire correctly here because the vars they consume (var(--card), var(--ink), etc.)
+   pick up the new values through cascade. The few rules that hardcode dark colours
+   (table hover, stat-ico backgrounds, etc.) are re-declared in the appended block below. */
+:root[data-theme="dark"] {
+    --ink: #e2e8f0;
+    --muted: #94a3b8;
+    --muted-2: #64748b;
+    --bg: #0b1220;
+    --card: #172033;
+    --border: #263241;
+    --green-soft: #14532d;
+    --shadow: 0 1px 3px rgba(0, 0, 0, .5), 0 1px 2px rgba(0, 0, 0, .35);
+    --shadow-lg: 0 12px 30px rgba(0, 0, 0, .55);
+    color-scheme: dark;
+}
 @media (prefers-color-scheme: dark) {
-    :root {
+    :root:not([data-theme="light"]) {
         --ink: #e2e8f0;
         --muted: #94a3b8;
         --muted-2: #64748b;
@@ -964,3 +1001,67 @@ tr.tbl-group-row td {
     .brand-sub { color: #a7d8bb; }
     .stat-card.clickable:hover { border-color: #16a34a; }
 }
+
+/* Same per-element dark overrides as the media-query block above, but scoped to the
+   explicit [data-theme="dark"] override. Duplicated deliberately - the two selectors
+   (media-query vs attribute) can't be combined in one CSS rule. Kept in sync with the
+   block above. Only the rules that hardcode dark backgrounds/colours are repeated;
+   rules that use var(--card)/var(--ink)/etc. already work because the vars are set. */
+:root[data-theme="dark"] .btn-danger { background: #3b1414; color: #fca5a5; border-color: #5a2b2b; }
+:root[data-theme="dark"] .btn-danger:hover { background: #4b1a1a; }
+:root[data-theme="dark"] .btn-warn { background: #3a2b0f; color: #fcd34d; border-color: #5c4520; }
+:root[data-theme="dark"] .btn-warn:hover { background: #493618; }
+:root[data-theme="dark"] .btn-ghost:hover { background: rgba(255, 255, 255, .06); color: var(--ink); }
+:root[data-theme="dark"] .input,
+:root[data-theme="dark"] select.input,
+:root[data-theme="dark"] textarea.input { background: #0f172a; color: var(--ink); }
+:root[data-theme="dark"] .search {
+    background: #0f172a url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2'><circle cx='11' cy='11' r='7'/><path d='m21 21-4.3-4.3'/></svg>") no-repeat 11px center;
+}
+:root[data-theme="dark"] .barcode-bar { background: #0d2a1a; border-color: #14532d; }
+:root[data-theme="dark"] .barcode-bar input { background: #0f172a; color: var(--ink); }
+:root[data-theme="dark"] table.tbl th { background: #111a2b; }
+:root[data-theme="dark"] table.tbl tbody tr:not(.tbl-group-row):hover { background: #1c273a; }
+:root[data-theme="dark"] tr.tbl-group-row td { background: #111a2b; color: #86efac; }
+:root[data-theme="dark"] .stepper button { background: #0f172a; color: var(--ink); border-color: var(--border); }
+:root[data-theme="dark"] .stepper button:hover { background: #1c273a; }
+:root[data-theme="dark"] .stepper input { background: #0f172a; color: var(--ink); border-color: var(--border); }
+:root[data-theme="dark"] .cart-line { border-bottom-color: #263241; }
+:root[data-theme="dark"] .stat-ico.green { background: #14532d; }
+:root[data-theme="dark"] .stat-ico.blue { background: #1e3a5f; }
+:root[data-theme="dark"] .stat-ico.amber { background: #3a2b0f; }
+:root[data-theme="dark"] .stat-ico.violet { background: #2e1e5f; }
+:root[data-theme="dark"] .bar-track { background: #263241; }
+:root[data-theme="dark"] .pill.warn { background: #3a2b0f; color: #fcd34d; }
+:root[data-theme="dark"] .pill.danger { background: #3b1414; color: #fca5a5; }
+:root[data-theme="dark"] .pill.ok { background: #14532d; color: #86efac; }
+:root[data-theme="dark"] .role-badge { background: #263241; color: var(--muted); }
+:root[data-theme="dark"] .role-badge.ADMIN { background: #2e1e5f; color: #c4b5fd; }
+:root[data-theme="dark"] .role-badge.MANAGER { background: #1e3a5f; color: #93c5fd; }
+:root[data-theme="dark"] .role-badge.CASHIER { background: #14532d; color: #86efac; }
+:root[data-theme="dark"] .z-title { color: #86efac; }
+:root[data-theme="dark"] .z-tile { background: #0f172a; }
+:root[data-theme="dark"] .z-tile-value { color: #86efac; }
+:root[data-theme="dark"] .z-tbl tr.z-total td { border-top-color: #86efac; }
+:root[data-theme="dark"] .success-icon { background: #14532d; color: #86efac; }
+:root[data-theme="dark"] .change-banner { background: #14532d; color: #d1fae5; }
+:root[data-theme="dark"] .change-banner b { color: #86efac; }
+:root[data-theme="dark"] .mini-row.clickable:hover { background: rgba(255, 255, 255, .04); }
+:root[data-theme="dark"] .total-row.grand span:last-child { color: #86efac; }
+:root[data-theme="dark"] .total-row.change,
+:root[data-theme="dark"] .total-row.change span:last-child { color: #86efac; }
+:root[data-theme="dark"] .total-row.short,
+:root[data-theme="dark"] .total-row.short span:last-child { color: #fca5a5; }
+:root[data-theme="dark"] .login-error { background: #3b1414; color: #fca5a5; }
+:root[data-theme="dark"] .toast { background: #0f172a; color: #e2e8f0; border: 1px solid var(--border); }
+:root[data-theme="dark"] .toast.success { background: #14532d; border-color: #16a34a; color: #d1fae5; }
+:root[data-theme="dark"] .toast.error { background: #5b1a1a; border-color: #b91c1c; color: #fecaca; }
+:root[data-theme="dark"] .stat-hint { color: #86efac; }
+:root[data-theme="dark"] .link-action { color: #86efac; }
+:root[data-theme="dark"] .admin-tab.active { color: #86efac; border-bottom-color: #16a34a; }
+:root[data-theme="dark"] .stat-card.clickable:hover { border-color: #16a34a; }
+:root[data-theme="dark"] .product-card { background: var(--card); }
+:root[data-theme="dark"] .pc-stock { background: #263241; color: var(--muted); }
+:root[data-theme="dark"] .pc-stock.low { background: #3a2b0f; color: #fcd34d; }
+:root[data-theme="dark"] .pc-add { background: #14532d; color: #86efac; }
+:root[data-theme="dark"] .pc-price { color: #86efac; }

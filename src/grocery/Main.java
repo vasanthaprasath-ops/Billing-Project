@@ -97,6 +97,9 @@ public class Main {
     private static AppContext buildContext() {
         DATA_DIR.mkdirs();
         INVOICES_DIR.mkdirs();
+        // If an admin staged a restore, swap it in now - before anything reads the DB or
+        // store.properties. Safe because nothing has the database open yet at this point.
+        grocery.service.SqliteRestore.applyPendingIfAny(DATA_DIR, DB_FILE, STORE_FILE);
         StoreConfig store = new StoreConfig(STORE_FILE);
         // Pin every wall-clock read (invoice timestamps, day boundaries, daily-backup
         // rollover) to the shop's local time - regardless of whether the JVM was
@@ -160,6 +163,7 @@ public class Main {
         AppContext ctx = buildContext();
         WebServer server = new WebServer(ctx, port, WEB_DIR, INVOICES_DIR);
         server.start();
+        startDailyBackupScheduler(ctx);
 
         String url = "http://localhost:" + port + "/";
         System.out.println();
@@ -170,6 +174,29 @@ public class Main {
         System.out.println();
 
         openBrowser(url);
+    }
+
+    /**
+     * Keeps the daily backup firing on a server that never restarts. The old code only ran
+     * {@code takeDailyBackupIfNeeded()} once at boot, so a machine left running for days only
+     * ever backed up on its boot day. {@code takeDailyBackupIfNeeded()} is a no-op once today's
+     * copy exists, so an hourly tick simply notices the date rollover and writes the new day's
+     * backup. Daemon thread, so it never holds the JVM open.
+     */
+    private static void startDailyBackupScheduler(AppContext ctx) {
+        java.util.concurrent.ScheduledExecutorService scheduler =
+                java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+                    Thread t = new Thread(r, "daily-backup");
+                    t.setDaemon(true);
+                    return t;
+                });
+        scheduler.scheduleAtFixedRate(() -> {
+            try {
+                ctx.backup().takeDailyBackupIfNeeded();
+            } catch (RuntimeException e) {
+                grocery.util.Log.warn("Scheduled daily-backup tick failed: " + e.getMessage(), e);
+            }
+        }, 1, 1, java.util.concurrent.TimeUnit.HOURS);
     }
 
     private static void openBrowser(String url) {

@@ -23,6 +23,20 @@ public final class Http {
         }
     }
 
+    /**
+     * Reads the raw request body (for binary uploads like a restore .zip), refusing anything
+     * larger than {@code maxBytes} so a hostile or accidental huge upload can't exhaust memory.
+     */
+    public static byte[] readBodyBytes(HttpExchange ex, int maxBytes) throws IOException {
+        try (InputStream in = ex.getRequestBody()) {
+            byte[] data = in.readNBytes(maxBytes + 1);
+            if (data.length > maxBytes) {
+                throw new IllegalArgumentException("Upload too large (maximum " + (maxBytes / (1024 * 1024)) + " MB).");
+            }
+            return data;
+        }
+    }
+
     public static Map<String, String> queryParams(HttpExchange ex) {
         Map<String, String> params = new HashMap<>();
         String raw = ex.getRequestURI().getRawQuery();
@@ -90,8 +104,32 @@ public final class Http {
         return ex.getRemoteAddress() == null ? "" : ex.getRemoteAddress().getAddress().getHostAddress();
     }
 
+    /**
+     * Standard defense-in-depth headers on every response - light on features, heavy on the
+     * common footguns. {@code nosniff} kills content-type sniffing shenanigans; {@code DENY}
+     * on framing blocks clickjacking; a strict same-origin CSP means an XSS'd chunk of markup
+     * can't call out to an attacker's domain; {@code no-referrer} keeps invoice URLs from
+     * leaking to any external site the user clicks off to. HSTS is set only when we're
+     * genuinely on HTTPS ({@code SESSION_SECURE=true}); on plain http:// it would just be
+     * ignored, or worse cache a promise we can't keep.
+     */
+    public static void applySecurityHeaders(HttpExchange ex) {
+        var h = ex.getResponseHeaders();
+        h.set("X-Content-Type-Options", "nosniff");
+        h.set("X-Frame-Options", "DENY");
+        h.set("Referrer-Policy", "no-referrer");
+        // Same-origin only; inline scripts/styles are used by index.html but no eval, no remote hosts.
+        h.set("Content-Security-Policy",
+                "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+                + "script-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
+        if (SECURE_COOKIES) {
+            h.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+        }
+    }
+
     public static void sendJson(HttpExchange ex, int status, Object body) throws IOException {
         byte[] bytes = Json.toJson(body).getBytes(StandardCharsets.UTF_8);
+        applySecurityHeaders(ex);
         ex.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
         send(ex, status, bytes);
     }
@@ -103,6 +141,7 @@ public final class Http {
     }
 
     public static void sendBytes(HttpExchange ex, int status, String contentType, byte[] bytes) throws IOException {
+        applySecurityHeaders(ex);
         ex.getResponseHeaders().set("Content-Type", contentType);
         send(ex, status, bytes);
     }

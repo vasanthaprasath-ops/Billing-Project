@@ -484,7 +484,8 @@ const VIEW_META = {
     products: ["Products", "Manage your catalogue and stock"],
     invoices: ["Invoices", "Browse and reprint past bills"],
     dayreport: ["Day Report", "Day-end reconciliation for your till"],
-    admin: ["Admin", "Branches, users, audit log and backups"]
+    admin: ["Admin", "Branches, users, audit log and backups"],
+    settings: ["Settings", "Personalise your dashboard and preferences"]
 };
 
 function switchView(name, opts) {
@@ -512,6 +513,68 @@ function switchView(name, opts) {
     else if (name === "invoices") loadInvoices();
     else if (name === "dayreport") renderZReportTab(document.getElementById("view-dayreport"));
     else if (name === "admin") renderAdminTab(currentAdminTab);
+    else if (name === "settings") renderSettings();
+}
+
+/* ============================================================
+   USER SETTINGS (per-user, persisted in localStorage)
+   ============================================================
+   Layout is a { visible: Set<string>, order: string[] } shape - `order` is the
+   authoritative sequence and `visible` filters it. Keyed by username so two people
+   using the same machine don't overwrite each other's dashboard. */
+
+// Every configurable dashboard bucket, in the DEFAULT order. Anything not in `order`
+// falls back to this list at the end (so a future new bucket appears automatically).
+const DASHBOARD_BUCKETS = [
+    { key: "stats",         label: "Summary stat tiles",  hint: "The four coloured cards at the top" },
+    { key: "category",      label: "Revenue by Category" },
+    { key: "topItems",      label: "Top Items" },
+    { key: "payment",       label: "Payment Mix" },
+    { key: "lowStock",      label: "Low Stock Alerts" },
+    { key: "recentInvoices",label: "Recent Invoices" },
+    { key: "branch",        label: "Sales by Branch",     hint: "Only shown when viewing All Branches" }
+];
+const DEFAULT_BUCKET_ORDER = DASHBOARD_BUCKETS.map(b => b.key);
+
+function settingsKey() { return "fm_settings_" + (session && session.username || "guest"); }
+
+function loadUserSettings() {
+    let s = {};
+    try { s = JSON.parse(localStorage.getItem(settingsKey()) || "{}"); } catch (e) { s = {}; }
+    const visibleArr = Array.isArray(s.visible) ? s.visible : DEFAULT_BUCKET_ORDER.slice();
+    const orderArr = Array.isArray(s.order) && s.order.length ? s.order.slice() : DEFAULT_BUCKET_ORDER.slice();
+    // Repair drift: drop keys we no longer know about, and append any new default keys.
+    const known = new Set(DEFAULT_BUCKET_ORDER);
+    const order = orderArr.filter(k => known.has(k));
+    DEFAULT_BUCKET_ORDER.forEach(k => { if (!order.includes(k)) order.push(k); });
+    return {
+        visible: new Set(visibleArr.filter(k => known.has(k))),
+        order,
+        theme: s.theme || "auto",                        // "auto" | "light" | "dark"
+        defaultPeriod: s.defaultPeriod || null,          // "today" | "week" | "month" | "all"
+        defaultView: s.defaultView || "dashboard"
+    };
+}
+
+function saveUserSettings(patch) {
+    const cur = loadUserSettings();
+    const next = {
+        visible: Array.from(patch.visible || cur.visible),
+        order: patch.order || cur.order,
+        theme: patch.theme || cur.theme,
+        defaultPeriod: patch.defaultPeriod === undefined ? cur.defaultPeriod : patch.defaultPeriod,
+        defaultView: patch.defaultView || cur.defaultView
+    };
+    localStorage.setItem(settingsKey(), JSON.stringify(next));
+}
+
+/** Apply the saved theme by stamping data-theme on <html>; the CSS's dark-mode
+ *  rules already fire on that attribute in addition to prefers-color-scheme. */
+function applyThemePreference() {
+    const t = loadUserSettings().theme;
+    const root = document.documentElement;
+    if (t === "auto") root.removeAttribute("data-theme");
+    else root.setAttribute("data-theme", t);
 }
 
 async function loadItems() {
@@ -679,34 +742,13 @@ async function loadDashboard() {
             </div>
         </div>`;
 
-    // Layout: 3 columns on wide viewports, each card pinned to one fixed column
-    // regardless of view mode - switching between "All Branches" and a single
-    // branch used to make Top Items and Low Stock silently jump columns (they
-    // moved from col 1/2 to col 2/3) even though nothing about them changed.
-    // Now only the Sales-by-Branch card's presence changes (all-branches only,
-    // appended where it's relevant - alongside Recent Invoices) - every other
-    // card keeps the same column in every mode.
-    // Column 1: Revenue by Category + Top Items (what's selling)
-    // Column 2: Payment Mix + Low Stock Alerts (money in / stock out)
-    // Column 3: Recent Invoices + Sales by Branch (all-branches only)
-    const leftCol = [categoryCard, topItemsCard];
-    const midCol = [paymentCard, lowStockCard];
-    const rightCol = d.allBranches ? [recentInvoicesCard, branchCard] : [recentInvoicesCard];
-
-    view.innerHTML = `
-        <div class="dash-header">
-            <div class="dash-context">
-                <span class="dash-scope">${esc(d.branchName)}</span>
-                <span class="dash-scope-dot">·</span>
-                <span class="dash-scope">${esc(periodLabel())}</span>
-            </div>
-            <div class="dash-actions">
-                ${periodControl()}
-                <button class="btn btn-primary btn-sm" id="qaNewBill">🧾 Start New Bill</button>
-                ${canManage ? `<button class="btn btn-sm" id="qaAddProduct">＋ Add Product</button>` : ""}
-            </div>
-        </div>
-
+    // Layout is now user-configurable via Settings - a saved `order` array + `visible` set
+    // decides what buckets appear and in what sequence. The Sales-by-Branch bucket still
+    // only shows for all-branches; anything else the user has turned off is skipped
+    // regardless of scope. We still distribute the visible cards across three columns for
+    // wide viewports (below 1024px CSS collapses them to one column).
+    const settings = loadUserSettings();
+    const statsHtml = `
         <div class="stat-grid">
             ${cards.map(c => `
                 <div class="stat-card clickable" data-nav="${c.nav}" data-filter="${c.filter || ""}">
@@ -720,13 +762,50 @@ async function loadDashboard() {
                     </div>
                     <div class="stat-hint">${c.hint}</div>
                 </div>`).join("")}
+        </div>`;
+    const bucketHtml = {
+        stats: statsHtml,
+        category: categoryCard,
+        topItems: topItemsCard,
+        payment: paymentCard,
+        lowStock: lowStockCard,
+        recentInvoices: recentInvoicesCard,
+        branch: d.allBranches ? branchCard : ""
+    };
+    // Stats spans all three columns; every other visible bucket goes into the grid, dealt
+    // out round-robin so col heights stay roughly balanced regardless of what's turned on.
+    const gridBuckets = settings.order.filter(k =>
+        k !== "stats" && settings.visible.has(k) && bucketHtml[k]);
+    const cols = [[], [], []];
+    gridBuckets.forEach((k, i) => cols[i % 3].push(bucketHtml[k]));
+    const showStats = settings.visible.has("stats");
+
+    view.innerHTML = `
+        <div class="dash-header">
+            <div class="dash-context">
+                <span class="dash-scope">${esc(d.branchName)}</span>
+                <span class="dash-scope-dot">·</span>
+                <span class="dash-scope">${esc(periodLabel())}</span>
+            </div>
+            <div class="dash-actions">
+                ${periodControl()}
+                <button class="btn btn-primary btn-sm" id="qaNewBill">🧾 Start New Bill</button>
+                ${canManage ? `<button class="btn btn-sm" id="qaAddProduct">＋ Add Product</button>` : ""}
+                <button class="btn btn-ghost btn-sm" id="qaCustomize" title="Choose which cards appear on your dashboard">🎛️ Customize</button>
+            </div>
         </div>
 
+        ${showStats ? statsHtml : ""}
+
         <div class="dash-grid dash-grid-3">
-            <div class="stack-16">${leftCol.join("")}</div>
-            <div class="stack-16">${midCol.join("")}</div>
-            <div class="stack-16">${rightCol.join("")}</div>
-        </div>`;
+            <div class="stack-16">${cols[0].join("")}</div>
+            <div class="stack-16">${cols[1].join("")}</div>
+            <div class="stack-16">${cols[2].join("")}</div>
+        </div>
+        ${gridBuckets.length === 0 && !showStats
+            ? `<div class="empty-state"><div class="big">🎛️</div>Your dashboard is empty.<br>
+                <button class="btn btn-primary" style="margin-top:14px" id="qaCustomize2">Choose what to show</button></div>`
+            : ""}`;
 
     // wire up the interactions
     wirePeriodControl(view, loadDashboard);
@@ -741,6 +820,126 @@ async function loadDashboard() {
     if (qaAdd) qaAdd.addEventListener("click", () => {
         if (session.role === "ADMIN" && !currentBranchId) { toast("Pick a branch first", "error"); return; }
         openProductModal(null);
+    });
+    const qaCustomize = document.getElementById("qaCustomize");
+    if (qaCustomize) qaCustomize.addEventListener("click", () => switchView("settings"));
+    const qaCustomize2 = document.getElementById("qaCustomize2");
+    if (qaCustomize2) qaCustomize2.addEventListener("click", () => switchView("settings"));
+}
+
+/* ============================================================
+   SETTINGS VIEW
+   ============================================================ */
+function renderSettings() {
+    const view = document.getElementById("view-settings");
+    const s = loadUserSettings();
+    const bucketRow = (b, idx) => `
+        <li class="bucket-row" draggable="true" data-key="${esc(b.key)}" data-idx="${idx}">
+            <span class="drag-grip" aria-hidden="true">⋮⋮</span>
+            <label class="check-inline" style="flex:1">
+                <input type="checkbox" data-bucket="${esc(b.key)}" ${s.visible.has(b.key) ? "checked" : ""}>
+                <span>
+                    <div class="bucket-label">${esc(b.label)}</div>
+                    ${b.hint ? `<div class="mini-sub">${esc(b.hint)}</div>` : ""}
+                </span>
+            </label>
+        </li>`;
+    // Show buckets in the user's saved order so they can see (and rearrange) their layout.
+    const ordered = s.order.map(k => DASHBOARD_BUCKETS.find(b => b.key === k)).filter(Boolean);
+    view.innerHTML = `
+        <div class="card settings-card">
+            <div class="card-head"><div class="card-title">Dashboard Layout</div>
+                <button class="btn btn-sm" id="resetDash">Reset to default</button></div>
+            <div class="card-body">
+                <p class="mini-sub" style="margin:0 0 10px">Turn cards on or off, and drag ⋮⋮ to reorder. Saved to this browser for <b>${esc(session.fullName || session.username)}</b>.</p>
+                <ul class="bucket-list" id="bucketList">
+                    ${ordered.map(bucketRow).join("")}
+                </ul>
+            </div>
+        </div>
+
+        <div class="card settings-card" style="margin-top:16px">
+            <div class="card-head"><div class="card-title">Appearance & Defaults</div></div>
+            <div class="card-body">
+                <div class="field"><label>Theme</label>
+                    <div class="period-seg" id="themeSeg">
+                        ${["auto","light","dark"].map(t => `
+                            <button class="period-btn ${s.theme === t ? "active" : ""}" data-theme="${t}">
+                                ${t === "auto" ? "Match System" : t[0].toUpperCase() + t.slice(1)}
+                            </button>`).join("")}
+                    </div></div>
+                <div class="field" style="max-width:280px"><label for="setPeriod">Default reporting period</label>
+                    <select class="input" id="setPeriod">
+                        <option value="">Remember last used</option>
+                        <option value="today" ${s.defaultPeriod === "today" ? "selected" : ""}>Today</option>
+                        <option value="week" ${s.defaultPeriod === "week" ? "selected" : ""}>7 Days</option>
+                        <option value="month" ${s.defaultPeriod === "month" ? "selected" : ""}>This Month</option>
+                        <option value="all" ${s.defaultPeriod === "all" ? "selected" : ""}>All Time</option>
+                    </select></div>
+                <div class="field" style="max-width:280px"><label for="setLanding">Default landing view</label>
+                    <select class="input" id="setLanding">
+                        ${defaultViewOptions(s.defaultView)}
+                    </select></div>
+            </div>
+        </div>`;
+
+    wireBucketList();
+    document.getElementById("resetDash").onclick = () => {
+        saveUserSettings({ visible: new Set(DEFAULT_BUCKET_ORDER), order: DEFAULT_BUCKET_ORDER.slice() });
+        toast("Dashboard reset to default", "success");
+        renderSettings();
+    };
+    document.querySelectorAll("#themeSeg [data-theme]").forEach(b => b.onclick = () => {
+        saveUserSettings({ theme: b.dataset.theme });
+        applyThemePreference();
+        renderSettings();
+    });
+    document.getElementById("setPeriod").onchange = e => {
+        saveUserSettings({ defaultPeriod: e.target.value || null });
+        toast("Default period saved", "success");
+    };
+    document.getElementById("setLanding").onchange = e => {
+        saveUserSettings({ defaultView: e.target.value });
+        toast("Default landing view saved", "success");
+    };
+}
+
+function defaultViewOptions(current) {
+    const allowed = ["dashboard", "billing", "invoices", "dayreport"];
+    if (session.role !== "CASHIER") allowed.splice(2, 0, "products");
+    return allowed.map(v => `<option value="${v}" ${current === v ? "selected" : ""}>${esc(VIEW_META[v][0])}</option>`).join("");
+}
+
+function wireBucketList() {
+    const list = document.getElementById("bucketList");
+    // toggle
+    list.querySelectorAll("input[data-bucket]").forEach(cb => cb.onchange = () => {
+        const s = loadUserSettings();
+        if (cb.checked) s.visible.add(cb.dataset.bucket); else s.visible.delete(cb.dataset.bucket);
+        saveUserSettings({ visible: s.visible });
+    });
+    // drag to reorder
+    let dragging = null;
+    list.querySelectorAll(".bucket-row").forEach(row => {
+        row.addEventListener("dragstart", e => {
+            dragging = row;
+            row.classList.add("dragging");
+            // firefox needs any data set to allow the drag
+            try { e.dataTransfer.setData("text/plain", row.dataset.key); } catch (_) {}
+        });
+        row.addEventListener("dragend", () => {
+            if (dragging) dragging.classList.remove("dragging");
+            dragging = null;
+            const newOrder = [...list.querySelectorAll(".bucket-row")].map(r => r.dataset.key);
+            saveUserSettings({ order: newOrder });
+        });
+        row.addEventListener("dragover", e => {
+            e.preventDefault();
+            if (!dragging || dragging === row) return;
+            const rect = row.getBoundingClientRect();
+            const before = (e.clientY - rect.top) < rect.height / 2;
+            list.insertBefore(dragging, before ? row : row.nextSibling);
+        });
     });
 }
 
@@ -1329,7 +1528,7 @@ function renderInvoices(all, filter) {
                     <td class="num"><div class="btn-group">
                         <button class="btn btn-sm" data-pdf="${esc(inv.pdfUrl)}">📄 A4</button>
                         <button class="btn btn-sm" data-pdf="${esc(inv.thermalPdfUrl)}">🧾 Receipt</button>
-                        <button class="btn btn-sm btn-warn" data-return="${esc(inv.invoiceNo)}">↩ Return</button>
+                        ${session.role !== "CASHIER" ? `<button class="btn btn-sm btn-warn" data-return="${esc(inv.invoiceNo)}">↩ Return</button>` : ""}
                     </div></td>
                 </tr>`).join("") : `<tr><td colspan="${showBranch ? 8 : 7}"><div class="empty-state"><div class="big">📁</div>No invoices yet. Create a bill to get started.</div></td></tr>`}
             </tbody>
@@ -1804,12 +2003,54 @@ function renderBackupTab(body) {
             <div class="card-head"><div class="card-title">Data Backup</div></div>
             <div class="card-body">
                 <p class="mini-sub" style="margin:0 0 14px">Everything lives in a single SQLite file at <code>data/freshmart.db</code>.
-                    Download a zip of the whole <code>data/</code> folder any time, and the app also keeps its own dated
-                    copy under <code>data/backups/</code> once a day automatically.</p>
+                    Download a zip any time. The app also keeps a dated copy under <code>data/backups/</code>
+                    automatically — now <b>every day the server is running</b>, not just the day it started.</p>
                 <button class="btn btn-primary" id="downloadBackupBtn">⬇ Download Backup (.zip)</button>
+            </div>
+        </div>
+        <div class="card settings-card" style="margin-top:16px">
+            <div class="card-head"><div class="card-title">Restore from Backup</div></div>
+            <div class="card-body">
+                <p class="mini-sub" style="margin:0 0 14px">Replace <b>all current data</b> with a backup zip you
+                    downloaded earlier. For safety the restore is <b>staged</b> and takes effect the next time the app
+                    starts; your current data is copied to <code>data/backups/pre-restore-…</code> first.</p>
+                <div class="field" style="max-width:420px">
+                    <input class="input" id="restoreFile" type="file" accept=".zip,application/zip">
+                </div>
+                <button class="btn btn-danger" id="restoreBtn">⬆ Restore from this backup</button>
             </div>
         </div>`;
     document.getElementById("downloadBackupBtn").onclick = () => window.open("/api/admin/backup", "_blank");
+    document.getElementById("restoreBtn").onclick = () => {
+        const input = document.getElementById("restoreFile");
+        const file = input.files && input.files[0];
+        if (!file) { toast("Choose a backup .zip first", "error"); return; }
+        confirmAction({
+            title: "Restore from backup?",
+            message: `This will replace <b>all current data</b> with <b>${esc(file.name)}</b> when the app next starts.
+                Your current data is saved to a pre-restore folder first. Continue?`,
+            confirmLabel: "Stage Restore",
+            busyLabel: "Uploading…",
+            onConfirm: async () => {
+                const buf = await file.arrayBuffer();
+                const res = await fetch("/api/admin/restore", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/octet-stream" },
+                    body: buf
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data.error || "Restore failed");
+                closeModal();
+                openModal(`
+                    <div class="modal" style="max-width:420px">
+                        <div class="modal-head"><h3>Restore staged</h3></div>
+                        <div class="modal-body"><p class="mini-sub" style="margin:0">${esc(data.message || "Restart the app to complete the restore.")}</p></div>
+                        <div class="modal-foot"><button class="btn btn-primary" id="restoreOkBtn">Got it</button></div>
+                    </div>`);
+                document.getElementById("restoreOkBtn").onclick = closeModal;
+            }
+        });
+    };
 }
 
 /* ============================================================
@@ -1864,6 +2105,14 @@ function renderStoreFooter() {
 
 async function bootApp() {
     applyRoleVisibility();
+    // Apply the user's saved theme immediately so we don't flash the wrong palette.
+    // Their default reporting period (if set) also wins over whatever the previous session left in localStorage.
+    applyThemePreference();
+    const userSettings = loadUserSettings();
+    if (userSettings.defaultPeriod) {
+        reportPeriod = userSettings.defaultPeriod;
+        localStorage.setItem("fm_period", reportPeriod);
+    }
     try {
         store = await api.get("/api/store");
         document.getElementById("brandName").textContent = (store.name || "FreshMart").split(" ")[0];
@@ -1878,7 +2127,14 @@ async function bootApp() {
     // store-wide default.
     renderStoreFooter();
     try { await loadItems(); } catch (e) { /* shown per-view */ }
-    switchView("dashboard");
+    // Honour the user's chosen landing view. Guard against a stale value naming a view they
+    // no longer have access to (e.g. cashier saved "products" then role was demoted).
+    const landing = userSettings.defaultView;
+    const canLand = landing === "dashboard"
+        || (landing === "products" && session.role !== "CASHIER")
+        || (landing === "admin" && session.role === "ADMIN")
+        || ["billing", "invoices", "dayreport", "settings"].includes(landing);
+    switchView(canLand ? landing : "dashboard");
 }
 
 async function init() {

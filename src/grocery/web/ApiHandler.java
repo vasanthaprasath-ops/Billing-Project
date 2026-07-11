@@ -86,6 +86,16 @@ public class ApiHandler implements HttpHandler {
             throw ApiException.notSignedIn();
         }
 
+        // A user still flagged to set their first real password may only read their own session,
+        // change the password, or log out - nothing else. Previously this was enforced only in the
+        // UI (a forced modal), so a crafted client could skip it and use every other endpoint.
+        if (user.isMustChangePassword()
+                && !(method.equals("GET") && sub.equals("/auth/me"))
+                && !(method.equals("POST") && sub.equals("/auth/change-password"))
+                && !(method.equals("POST") && sub.equals("/auth/logout"))) {
+            throw ApiException.forbidden("Please set a new password before continuing.");
+        }
+
         if (sub.equals("/auth/me") && method.equals("GET")) {
             Http.sendJson(ex, 200, Mappers.session(user, ctx.branches()));
         } else if (sub.equals("/auth/logout") && method.equals("POST")) {
@@ -108,6 +118,8 @@ public class ApiHandler implements HttpHandler {
             handleAuditLog(ex, user);
         } else if (sub.equals("/admin/backup") && method.equals("GET")) {
             handleBackup(ex, user);
+        } else if (sub.equals("/admin/restore") && method.equals("POST")) {
+            handleRestore(ex, user);
         } else if (sub.equals("/dashboard") && method.equals("GET")) {
             Http.sendJson(ex, 200, buildDashboard(ex, user));
         } else if (sub.equals("/reports/z") && method.equals("GET")) {
@@ -351,6 +363,21 @@ public class ApiHandler implements HttpHandler {
         Http.sendBytes(ex, 200, "application/zip", zip);
     }
 
+    private void handleRestore(HttpExchange ex, User user) throws IOException {
+        requireRole(user, Role.ADMIN);
+        // 256 MB ceiling: far above any realistic single-store DB, low enough to refuse abuse.
+        byte[] zip = Http.readBodyBytes(ex, 256 * 1024 * 1024);
+        if (zip.length == 0) {
+            throw new IllegalArgumentException("No backup file was received.");
+        }
+        String summary = ctx.backup().stageRestore(zip);
+        ctx.auditLog().log(user, "RESTORE_STAGED", summary);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("staged", true);
+        body.put("message", "Backup staged (" + summary + "). Restart the app to complete the restore.");
+        Http.sendJson(ex, 200, body);
+    }
+
     // ---------------- items ----------------
 
     private void handleListItems(HttpExchange ex, User user) throws IOException {
@@ -575,6 +602,10 @@ public class ApiHandler implements HttpHandler {
     }
 
     private void handleCreateRefund(HttpExchange ex, User user) throws IOException {
+        // Refunds move money out of the till, so they need a manager's authority - a plain
+        // cashier can ring up sales but not sign off returns. This is the standard shrinkage
+        // control in retail; the frontend hides the Return button for cashiers to match.
+        requireRole(user, Role.ADMIN, Role.MANAGER);
         Dtos.RefundRequestDto req = Json.fromJson(Http.readBody(ex), Dtos.RefundRequestDto.class);
         if (req == null || req.originalInvoiceNo == null || req.originalInvoiceNo.isEmpty()) {
             throw new IllegalArgumentException("Original invoice number is required.");
