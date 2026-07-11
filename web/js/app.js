@@ -13,6 +13,7 @@ let currentView = "dashboard";
 let currentAdminTab = "branches";
 let invoicesSubTab = "sales"; // "sales" or "returns"
 let productsLowStockOnly = false; // true only when Products was opened via a "Low Stock" shortcut
+let invoicesPage = { offset: 0, limit: 50 };  // client-side paging state for the invoices/returns tables
 
 /* ---------------- API client ---------------- */
 const api = {
@@ -511,7 +512,7 @@ function switchView(name, opts) {
     if (name === "dashboard") loadDashboard();
     else if (name === "billing") renderBilling();
     else if (name === "products") loadProducts();
-    else if (name === "invoices") loadInvoices();
+    else if (name === "invoices") { invoicesPage.offset = 0; loadInvoices(); }
     else if (name === "dayreport") renderZReportTab(document.getElementById("view-dayreport"));
     else if (name === "customers") renderCustomers();
     else if (name === "admin") renderAdminTab(currentAdminTab);
@@ -1653,20 +1654,22 @@ async function loadInvoices() {
     const pr = periodRange();
     const q = buildQuery({
         branchId: session.role === "ADMIN" ? (currentBranchId || "all") : null,
-        from: pr.from, to: pr.to
+        from: pr.from, to: pr.to,
+        limit: invoicesPage.limit,
+        offset: invoicesPage.offset
     });
     try {
         if (invoicesSubTab === "returns") {
-            const refunds = await api.get("/api/refunds" + q);
-            renderRefundsList(refunds);
+            const page = await api.get("/api/refunds" + q);
+            renderRefundsList(page.items, page.total);
         } else {
-            const list = await api.get("/api/invoices" + q);
-            renderInvoices(list, "");
+            const page = await api.get("/api/invoices" + q);
+            renderInvoices(page.items, "", page.total);
         }
     } catch (e) { view.innerHTML = `<div class="empty-state">Could not load ${invoicesSubTab === "returns" ? "returns" : "invoices"}.</div>`; }
 }
 
-function renderInvoices(all, filter) {
+function renderInvoices(all, filter, totalCount) {
     const q = (filter || "").toLowerCase();
     const list = all.filter(inv => !q
         || inv.invoiceNo.toLowerCase().includes(q)
@@ -1674,6 +1677,7 @@ function renderInvoices(all, filter) {
         || (inv.cashierUsername || "").toLowerCase().includes(q));
     const showBranch = session.role === "ADMIN" && !currentBranchId;
     const periodTotal = all.reduce((sum, inv) => sum + Number(inv.grandTotal || 0), 0);
+    const total = (totalCount === undefined) ? list.length : totalCount;
     const view = document.getElementById("view-invoices");
     view.innerHTML = `
         ${invoicesSubTabs()}
@@ -1681,7 +1685,7 @@ function renderInvoices(all, filter) {
             <input class="input search" id="invSearch" placeholder="Search invoice no / customer / cashier…" value="${esc(filter || "")}">
             ${periodControl()}
             <div class="spacer"></div>
-            <span class="mini-sub">${all.length} invoice(s) · <b>${money(periodTotal)}</b></span>
+            <span class="mini-sub">${total} invoice(s)${total > all.length ? ` (showing ${all.length})` : ""} · <b>${money(periodTotal)}</b> shown</span>
             <button class="btn btn-sm" id="csvExportBtn" title="Download this period as a CSV spreadsheet">⬇ CSV</button>
         </div>
         <div class="card"><div class="table-wrap"><table class="tbl">
@@ -1704,12 +1708,14 @@ function renderInvoices(all, filter) {
                     </div></td>
                 </tr>`).join("") : `<tr><td colspan="${showBranch ? 8 : 7}"><div class="empty-state"><div class="big">📁</div>No invoices yet. Create a bill to get started.</div></td></tr>`}
             </tbody>
-        </table></div></div>`;
+        </table></div>
+        ${paginationBar(total)}</div>`;
 
     wireInvoicesSubTabs();
     wirePeriodControl(view, loadInvoices);
+    wirePaginationBar(view);
     const s = document.getElementById("invSearch");
-    s.addEventListener("input", debounced(e => renderInvoices(all, e.target.value), 120));
+    s.addEventListener("input", debounced(e => renderInvoices(all, e.target.value, total), 120));
     s.focus();
     s.setSelectionRange(s.value.length, s.value.length);
     view.querySelectorAll("button[data-pdf]").forEach(b =>
@@ -1737,20 +1743,22 @@ function wireInvoicesSubTabs() {
     document.querySelectorAll("#invSubTabs .admin-tab").forEach(b => b.onclick = () => {
         if (b.dataset.sub === invoicesSubTab) return;
         invoicesSubTab = b.dataset.sub;
+        invoicesPage.offset = 0;   // switching sub-tab should land on page 1
         loadInvoices();
     });
 }
 
-function renderRefundsList(refunds) {
+function renderRefundsList(refunds, totalCount) {
     const showBranch = session.role === "ADMIN" && !currentBranchId;
-    const total = refunds.reduce((s, r) => s + Number(r.refundAmount || 0), 0);
+    const shownTotal = refunds.reduce((s, r) => s + Number(r.refundAmount || 0), 0);
+    const total = (totalCount === undefined) ? refunds.length : totalCount;
     const view = document.getElementById("view-invoices");
     view.innerHTML = `
         ${invoicesSubTabs()}
         <div class="toolbar">
             ${periodControl()}
             <div class="spacer"></div>
-            <span class="mini-sub">${refunds.length} refund(s) · <b>${money(total)}</b></span>
+            <span class="mini-sub">${total} refund(s)${total > refunds.length ? ` (showing ${refunds.length})` : ""} · <b>${money(shownTotal)}</b> shown</span>
         </div>
         <div class="card"><div class="table-wrap"><table class="tbl">
             <thead><tr><th>Refund No</th>${showBranch ? "<th>Branch</th>" : ""}<th>Date</th><th>Original Invoice</th><th>Cashier</th><th>Reason</th><th class="num">Items</th><th class="num">Refunded</th></tr></thead>
@@ -1766,9 +1774,37 @@ function renderRefundsList(refunds) {
                     <td class="num money" style="color:var(--red)">− ${money(r.refundAmount)}</td>
                 </tr>`).join("") : `<tr><td colspan="${showBranch ? 8 : 7}"><div class="empty-state"><div class="big">↩</div>No refunds yet.</div></td></tr>`}
             </tbody>
-        </table></div></div>`;
+        </table></div>
+        ${paginationBar(total)}</div>`;
     wireInvoicesSubTabs();
     wirePeriodControl(view, loadInvoices);
+    wirePaginationBar(view);
+}
+
+/** Prev/Next pagination footer using the shared invoicesPage state.
+ *  Hidden entirely when the whole list fits in one page (total <= limit). */
+function paginationBar(total) {
+    if (total <= invoicesPage.limit) return "";
+    const start = invoicesPage.offset + 1;
+    const end = Math.min(invoicesPage.offset + invoicesPage.limit, total);
+    const canPrev = invoicesPage.offset > 0;
+    const canNext = end < total;
+    return `<div class="pagination-bar">
+        <span class="mini-sub">Showing ${start}–${end} of ${total}</span>
+        <div class="spacer"></div>
+        <button class="btn btn-sm" data-page="prev" ${canPrev ? "" : "disabled"}>← Prev</button>
+        <button class="btn btn-sm" data-page="next" ${canNext ? "" : "disabled"}>Next →</button>
+    </div>`;
+}
+function wirePaginationBar(view) {
+    view.querySelectorAll("[data-page]").forEach(b => b.onclick = () => {
+        if (b.dataset.page === "prev") {
+            invoicesPage.offset = Math.max(0, invoicesPage.offset - invoicesPage.limit);
+        } else {
+            invoicesPage.offset += invoicesPage.limit;
+        }
+        loadInvoices();
+    });
 }
 
 async function openReturnModal(invoiceNo) {

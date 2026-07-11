@@ -649,11 +649,59 @@ public class ApiHandler implements HttpHandler {
         String branchId = resolveBranchIdOrAll(ex, user);
         List<Invoice> list = branchId == null ? ctx.invoiceStore().getAll() : ctx.invoiceStore().getAllForBranch(branchId);
         list = filterByDate(ex, list);
-        List<Dtos.InvoiceDto> out = new ArrayList<>();
-        for (Invoice inv : list) {
-            out.add(Mappers.invoice(inv, ctx.branches()));
+
+        // Pagination. Backwards-compatible default: if no limit is given, return the whole
+        // filtered set as a bare array (what every existing caller expects). When ?limit= is
+        // present we switch to the {items,total,offset,limit} envelope so the UI can page.
+        // Big stores were slow to scroll a several-thousand-invoice history all at once even
+        // though the query is in-memory - a limit keeps the JSON payload and DOM small.
+        Map<String, String> q = Http.queryParams(ex);
+        String rawLimit = q.get("limit");
+        if (rawLimit == null || rawLimit.isEmpty()) {
+            List<Dtos.InvoiceDto> out = new ArrayList<>(list.size());
+            for (Invoice inv : list) {
+                out.add(Mappers.invoice(inv, ctx.branches()));
+            }
+            Http.sendJson(ex, 200, out);
+            return;
         }
-        Http.sendJson(ex, 200, out);
+        Dtos.PageDto<Dtos.InvoiceDto> page = paginate(list, q, this::invoiceToDto);
+        Http.sendJson(ex, 200, page);
+    }
+
+    private Dtos.InvoiceDto invoiceToDto(Invoice inv) {
+        return Mappers.invoice(inv, ctx.branches());
+    }
+
+    /**
+     * Slice a filtered list per {@code ?limit=} and {@code ?offset=} into the paged envelope.
+     * limit is clamped to [1, 1000]; offset is clamped to [0, total]. Kept generic so the
+     * refunds list can reuse the same shape.
+     */
+    private <T, R> Dtos.PageDto<R> paginate(List<T> list, Map<String, String> q, java.util.function.Function<T, R> mapper) {
+        int total = list.size();
+        int limit = parseIntOr(q.get("limit"), 50);
+        if (limit < 1) limit = 1;
+        if (limit > 1000) limit = 1000;
+        int offset = parseIntOr(q.get("offset"), 0);
+        if (offset < 0) offset = 0;
+        if (offset > total) offset = total;
+        int end = Math.min(offset + limit, total);
+        List<R> items = new ArrayList<>(end - offset);
+        for (int i = offset; i < end; i++) {
+            items.add(mapper.apply(list.get(i)));
+        }
+        Dtos.PageDto<R> p = new Dtos.PageDto<>();
+        p.items = items;
+        p.total = total;
+        p.offset = offset;
+        p.limit = limit;
+        return p;
+    }
+
+    private static int parseIntOr(String s, int fallback) {
+        if (s == null || s.isEmpty()) return fallback;
+        try { return Integer.parseInt(s.trim()); } catch (NumberFormatException e) { return fallback; }
     }
 
     private void handleInvoiceDetail(HttpExchange ex, User user, String no) throws IOException {
@@ -861,11 +909,18 @@ public class ApiHandler implements HttpHandler {
         String branchId = resolveBranchIdOrAll(ex, user);
         List<Refund> list = branchId == null ? ctx.refunds().getAll() : ctx.refunds().getAllForBranch(branchId);
         list = filterRefundsByDate(ex, list);
-        List<Dtos.RefundDto> out = new ArrayList<>();
-        for (Refund r : list) {
-            out.add(Mappers.refund(r, ctx.branches()));
+        Map<String, String> q = Http.queryParams(ex);
+        // Same backwards-compat paging shape as /invoices: no ?limit -> bare array (unchanged),
+        // with ?limit= -> {items,total,offset,limit} envelope.
+        if (q.get("limit") == null || q.get("limit").isEmpty()) {
+            List<Dtos.RefundDto> out = new ArrayList<>(list.size());
+            for (Refund r : list) {
+                out.add(Mappers.refund(r, ctx.branches()));
+            }
+            Http.sendJson(ex, 200, out);
+            return;
         }
-        Http.sendJson(ex, 200, out);
+        Http.sendJson(ex, 200, paginate(list, q, r -> Mappers.refund(r, ctx.branches())));
     }
 
     private void handleRefundDetail(HttpExchange ex, User user, String no) throws IOException {

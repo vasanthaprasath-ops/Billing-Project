@@ -76,6 +76,19 @@ public final class Dtos {
         public double tax;
     }
 
+    /**
+     * A page of results: {@code items} is the slice returned, {@code total} the size of the
+     * full filtered set, {@code offset}/{@code limit} echo back what the client asked for. Cheap
+     * to compute since the underlying list lives in memory today; if history ever moves off-heap,
+     * only the total-count query changes.
+     */
+    public static class PageDto<T> {
+        public List<T> items;
+        public int total;
+        public int offset;
+        public int limit;
+    }
+
     public static class InvoiceDto {
         public String invoiceNo;
         public String branchId;
