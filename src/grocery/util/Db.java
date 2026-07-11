@@ -104,9 +104,14 @@ public final class Db {
                     "taxRatePercent REAL NOT NULL DEFAULT 0, " +
                     "stock REAL NOT NULL DEFAULT 0, " +
                     "barcode TEXT NOT NULL DEFAULT '', " +
-                    "reorderLevel REAL NOT NULL DEFAULT 0)");
+                    "reorderLevel REAL NOT NULL DEFAULT 0, " +
+                    "costPrice TEXT NOT NULL DEFAULT '0.00')");
             st.execute("CREATE INDEX IF NOT EXISTS idx_items_branchId ON items(branchId)");
             st.execute("CREATE INDEX IF NOT EXISTS idx_items_branch_barcode ON items(branchId, barcode)");
+            // Idempotent additive migration for older DBs. SQLite ALTER TABLE ADD COLUMN fails
+            // cleanly with "duplicate column name" if it's already there; we swallow that so a
+            // fresh DB (created above with the column already) and an old one converge.
+            addColumnIfMissing(st, "items", "costPrice", "TEXT NOT NULL DEFAULT '0.00'");
 
             st.execute("CREATE TABLE IF NOT EXISTS users (" +
                     "username TEXT PRIMARY KEY, " +
@@ -187,6 +192,24 @@ public final class Db {
                     "action TEXT NOT NULL, " +
                     "details TEXT NOT NULL DEFAULT '')");
             st.execute("CREATE INDEX IF NOT EXISTS idx_audit_log_when ON audit_log(\"when\")");
+        }
+    }
+
+    /**
+     * Additive migration helper. SQLite has no {@code ADD COLUMN IF NOT EXISTS} - it fails with
+     * "duplicate column name" if the column is already there. We catch that specific case and
+     * swallow it so fresh DBs (with the column baked into the CREATE) and older DBs (adding it
+     * via ALTER) converge silently.
+     */
+    private static void addColumnIfMissing(Statement st, String table, String column, String typeDdl)
+            throws SQLException {
+        try {
+            st.execute("ALTER TABLE " + table + " ADD COLUMN " + column + " " + typeDdl);
+        } catch (SQLException e) {
+            String msg = e.getMessage() == null ? "" : e.getMessage().toLowerCase();
+            if (!msg.contains("duplicate column name")) {
+                throw e;
+            }
         }
     }
 

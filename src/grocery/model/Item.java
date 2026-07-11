@@ -17,6 +17,7 @@ public class Item {
     private String category;
     private String unit;            // e.g. "kg", "pc", "ltr", "pkt"
     private BigDecimal price;       // selling price per unit
+    private BigDecimal costPrice;   // purchase / landed cost per unit - drives profit reports
     private double taxRatePercent;  // GST percent applied to this item
     private double stock;           // quantity on hand
     private String barcode;         // scanned barcode / SKU, optional
@@ -25,16 +26,31 @@ public class Item {
     public Item(String id, String branchId, String name, String category, String unit,
                 BigDecimal price, double taxRatePercent, double stock, String barcode,
                 double reorderLevel) {
+        this(id, branchId, name, category, unit, price, Money.ZERO, taxRatePercent, stock, barcode, reorderLevel);
+    }
+
+    public Item(String id, String branchId, String name, String category, String unit,
+                BigDecimal price, BigDecimal costPrice, double taxRatePercent, double stock,
+                String barcode, double reorderLevel) {
         this.id = id;
         this.branchId = branchId;
         this.name = name;
         this.category = category;
         this.unit = unit;
         this.price = Money.scale(price);
+        this.costPrice = Money.scale(costPrice == null ? Money.ZERO : costPrice);
         this.taxRatePercent = taxRatePercent;
         this.stock = stock;
         this.barcode = barcode == null ? "" : barcode;
         this.reorderLevel = reorderLevel;
+    }
+
+    public BigDecimal getCostPrice() {
+        return costPrice;
+    }
+
+    public void setCostPrice(BigDecimal costPrice) {
+        this.costPrice = Money.scale(costPrice == null ? Money.ZERO : costPrice);
     }
 
     public String getId() {

@@ -139,6 +139,14 @@ public class InventoryService {
         });
     }
 
+    /**
+     * Update a product's metadata (name/category/unit/price/tax/barcode/reorderLevel) WITHOUT
+     * touching stock. Stock moves only through {@link #reserveStock} (sales), {@link #restoreStock}
+     * (refunds), and {@link #adjustStock} (an explicit receive/adjust action). This closes a real
+     * lost-update race: previously edit-modal writes carried the entire row, so a manager fixing a
+     * price typo while cashiers were selling that item would silently clobber the current stock
+     * back to whatever value the form loaded - erasing real concurrent stock changes.
+     */
     public void update(String branchId, Item item) {
         db.inTransaction(() -> {
             synchronized (this) {
@@ -149,7 +157,10 @@ public class InventoryService {
                 if (!existing.getBranchId().equalsIgnoreCase(branchId)) {
                     throw new IllegalArgumentException("That item does not belong to this branch.");
                 }
-                updateRow(item);
+                // Preserve the live stock value. The item passed in comes from a form snapshot;
+                // trusting its stock field is the whole bug we're fixing here.
+                item.setStock(existing.getStock());
+                updateMetadataRow(item);
                 db.afterCommit(() -> {
                     synchronized (this) {
                         for (int i = 0; i < items.size(); i++) {
@@ -158,6 +169,39 @@ public class InventoryService {
                                 break;
                             }
                         }
+                    }
+                });
+            }
+        });
+    }
+
+    /**
+     * Add (positive delta) or remove (negative delta) stock for one item. The "Receive Stock" or
+     * "Adjust Stock" action - the correct way to change a stock number, not by editing the item.
+     * Reuses the same atomic write-then-afterCommit pattern as {@link #reserveStock}/{@link #restoreStock}
+     * so a rolled-back adjust leaves the cache and DB in lockstep. Refuses to drive stock negative.
+     */
+    public void adjustStock(String branchId, String itemId, double delta) {
+        if (delta == 0) {
+            return;
+        }
+        db.inTransaction(() -> {
+            synchronized (this) {
+                Item item = findInBranch(branchId, itemId);
+                if (item == null) {
+                    throw new IllegalArgumentException("No item with id '" + itemId + "' in this branch.");
+                }
+                double newStock = item.getStock() + delta;
+                if (newStock < 0) {
+                    throw new IllegalStateException(
+                            "Cannot reduce stock below zero (current " + trim(item.getStock())
+                                    + ", requested change " + trim(delta) + ").");
+                }
+                writeStock(itemId, newStock);
+                final double committedStock = newStock;
+                db.afterCommit(() -> {
+                    synchronized (this) {
+                        item.setStock(committedStock);
                     }
                 });
             }
@@ -310,8 +354,8 @@ public class InventoryService {
                 int seq = nextIdSeq();
                 for (Item src : getAll(fromBranchId)) {
                     Item copy = new Item(String.format("ITM-%03d", seq++), toBranchId, src.getName(),
-                            src.getCategory(), src.getUnit(), src.getPrice(), src.getTaxRatePercent(),
-                            0, src.getBarcode(), src.getReorderLevel());
+                            src.getCategory(), src.getUnit(), src.getPrice(), src.getCostPrice(),
+                            src.getTaxRatePercent(), 0, src.getBarcode(), src.getReorderLevel());
                     created.add(copy);
                     insert(copy);
                 }
@@ -364,7 +408,7 @@ public class InventoryService {
 
     private void insert(Item it) {
         db.update("INSERT INTO items(id, branchId, name, category, unit, price, taxRatePercent, " +
-                "stock, barcode, reorderLevel) VALUES(?,?,?,?,?,?,?,?,?,?)", ps -> {
+                "stock, barcode, reorderLevel, costPrice) VALUES(?,?,?,?,?,?,?,?,?,?,?)", ps -> {
             ps.setString(1, it.getId());
             ps.setString(2, it.getBranchId());
             ps.setString(3, it.getName());
@@ -375,21 +419,27 @@ public class InventoryService {
             ps.setDouble(8, it.getStock());
             ps.setString(9, it.getBarcode());
             ps.setDouble(10, it.getReorderLevel());
+            ps.setString(11, Money.format(it.getCostPrice() == null ? Money.ZERO : it.getCostPrice()));
         });
     }
 
-    private void updateRow(Item it) {
+    /**
+     * Metadata-only update: writes every column EXCEPT stock. Stock is intentionally not in
+     * this UPDATE so a stale form snapshot cannot overwrite live sales-driven changes. Stock
+     * moves are handled by writeStock() alone (called from reserveStock/restoreStock/adjustStock).
+     */
+    private void updateMetadataRow(Item it) {
         db.update("UPDATE items SET branchId=?, name=?, category=?, unit=?, price=?, taxRatePercent=?, " +
-                "stock=?, barcode=?, reorderLevel=? WHERE id=?", ps -> {
+                "barcode=?, reorderLevel=?, costPrice=? WHERE id=?", ps -> {
             ps.setString(1, it.getBranchId());
             ps.setString(2, it.getName());
             ps.setString(3, it.getCategory());
             ps.setString(4, it.getUnit());
             ps.setString(5, Money.format(it.getPrice()));
             ps.setDouble(6, it.getTaxRatePercent());
-            ps.setDouble(7, it.getStock());
-            ps.setString(8, it.getBarcode());
-            ps.setDouble(9, it.getReorderLevel());
+            ps.setString(7, it.getBarcode());
+            ps.setDouble(8, it.getReorderLevel());
+            ps.setString(9, Money.format(it.getCostPrice() == null ? Money.ZERO : it.getCostPrice()));
             ps.setString(10, it.getId());
         });
     }
@@ -411,6 +461,7 @@ public class InventoryService {
     private static Item mapRow(ResultSet rs) throws SQLException {
         return new Item(rs.getString("id"), rs.getString("branchId"), rs.getString("name"),
                 rs.getString("category"), rs.getString("unit"), Money.parse(rs.getString("price")),
+                Money.parse(rs.getString("costPrice")),
                 rs.getDouble("taxRatePercent"), rs.getDouble("stock"), rs.getString("barcode"),
                 rs.getDouble("reorderLevel"));
     }

@@ -41,6 +41,7 @@ public final class Mappers {
         d.category = it.getCategory();
         d.unit = it.getUnit();
         d.price = it.getPrice().doubleValue();
+        d.costPrice = it.getCostPrice() == null ? 0.0 : it.getCostPrice().doubleValue();
         d.taxRatePercent = it.getTaxRatePercent();
         d.stock = it.getStock();
         d.barcode = it.getBarcode();

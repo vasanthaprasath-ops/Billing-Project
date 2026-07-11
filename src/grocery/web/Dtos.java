@@ -30,10 +30,19 @@ public final class Dtos {
         public String category;
         public String unit;
         public double price;
+        public Double costPrice;    // boxed so a missing field means "leave alone" on update
         public double taxRatePercent;
         public double stock;
         public String barcode;
         public double reorderLevel;
+    }
+
+    /** Body for POST /api/items/{id}/adjust-stock: either delta (+/-) or an absolute newStock. */
+    public static class StockAdjustDto {
+        public String branchId;
+        public Double delta;      // e.g. +50 for a delivery, -3 for damaged units
+        public Double newStock;   // optional alternative - set absolute stock (delta computed server-side)
+        public String reason;
     }
 
     public static class CheckoutLineDto {
@@ -173,6 +182,18 @@ public final class Dtos {
         public List<PaymentBreakdownDto> paymentMix;
         /** Best sellers by revenue in the period - up to 5. */
         public List<TopItemDto> topItems;
+        /** Revenue minus current cost-of-goods (only counts lines with a known cost). */
+        public double profit;
+        /** Cost of goods sold on the covered lines (matches the profit calculation). */
+        public double cogs;
+        /** Gross margin percent = profit / coveredRevenue * 100 (0 if no cost data). */
+        public double grossMarginPercent;
+        /** Revenue on lines that had a known cost basis - hint denominator for the UI. */
+        public double profitCoverage;
+        /** Net revenue in scope (sales - refunds) - so UI can show "profit covers X of Y". */
+        public double profitCoverableRevenue;
+        /** Top profit contributors by category (may be shorter/different from categoryRevenue). */
+        public List<CategoryRevenueDto> categoryProfit;
     }
 
     public static class BranchDto {

@@ -128,6 +128,9 @@ public class ApiHandler implements HttpHandler {
             handleListItems(ex, user);
         } else if (sub.equals("/items") && method.equals("POST")) {
             handleAddItem(ex, user);
+        } else if (sub.startsWith("/items/") && sub.endsWith("/adjust-stock") && method.equals("POST")) {
+            String id = sub.substring("/items/".length(), sub.length() - "/adjust-stock".length());
+            handleAdjustStock(ex, user, id);
         } else if (sub.startsWith("/items/") && method.equals("PUT")) {
             handleUpdateItem(ex, user, sub.substring("/items/".length()));
         } else if (sub.startsWith("/items/") && method.equals("DELETE")) {
@@ -418,11 +421,56 @@ public class ApiHandler implements HttpHandler {
         String branchId = resolveBranchIdForBody(user, dto == null ? null : dto.branchId);
         Item previous = ctx.inventory().findInBranch(branchId, id);
         Item item = toItem(dto, id, branchId);
+        // If the client omitted costPrice, preserve the existing value (same "form snapshot
+        // must not clobber unrelated fields" defense we do for stock).
+        if (dto != null && dto.costPrice == null && previous != null) {
+            item.setCostPrice(previous.getCostPrice());
+        }
         ctx.inventory().update(branchId, item);
         String change = (previous != null && previous.getPrice().compareTo(item.getPrice()) != 0)
                 ? (" price " + Money.format(previous.getPrice()) + " -> " + Money.format(item.getPrice())) : "";
         ctx.auditLog().log(user, "ITEM_UPDATE", item.getId() + " " + item.getName() + change);
         Http.sendJson(ex, 200, Mappers.item(item));
+    }
+
+    /**
+     * Add or remove stock as an explicit, audited action - the correct way to change a stock
+     * number, instead of editing the product row. Accepts either {@code delta} (signed, e.g.
+     * +50 for a delivery) or {@code newStock} (absolute; delta is computed from current). Reason
+     * is optional but recommended; every adjust writes an audit entry so shrinkage/waste can
+     * later be reconciled from the log.
+     */
+    private void handleAdjustStock(HttpExchange ex, User user, String id) throws IOException {
+        requireRole(user, Role.ADMIN, Role.MANAGER);
+        Dtos.StockAdjustDto dto = Json.fromJson(Http.readBody(ex), Dtos.StockAdjustDto.class);
+        if (dto == null) {
+            throw new IllegalArgumentException("Missing request body.");
+        }
+        String branchId = resolveBranchIdForBody(user, dto.branchId);
+        Item before = ctx.inventory().findInBranch(branchId, id);
+        if (before == null) {
+            throw new IllegalArgumentException("No item with id '" + id + "' in this branch.");
+        }
+        double delta;
+        if (dto.delta != null) {
+            delta = dto.delta;
+        } else if (dto.newStock != null) {
+            delta = dto.newStock - before.getStock();
+        } else {
+            throw new IllegalArgumentException("Provide either 'delta' or 'newStock'.");
+        }
+        if (Double.isNaN(delta) || Double.isInfinite(delta)) {
+            throw new IllegalArgumentException("Stock change must be a finite number.");
+        }
+        ctx.inventory().adjustStock(branchId, id, delta);
+        Item after = ctx.inventory().findInBranch(branchId, id);
+        String reason = dto.reason == null ? "" : dto.reason.trim();
+        String sign = delta >= 0 ? "+" : "";
+        String details = id + " " + before.getName() + " " + sign + delta
+                + " (" + before.getStock() + " -> " + (after == null ? "?" : after.getStock()) + ")"
+                + (reason.isEmpty() ? "" : " reason=" + reason);
+        ctx.auditLog().log(user, "STOCK_ADJUST", details);
+        Http.sendJson(ex, 200, Mappers.item(after));
     }
 
     private void handleDeleteItem(HttpExchange ex, User user, String id) throws IOException {
@@ -443,11 +491,15 @@ public class ApiHandler implements HttpHandler {
         if (dto.price < 0 || dto.taxRatePercent < 0 || dto.stock < 0 || dto.reorderLevel < 0) {
             throw new IllegalArgumentException("Price, GST %, stock and reorder level cannot be negative.");
         }
+        if (dto.costPrice != null && dto.costPrice < 0) {
+            throw new IllegalArgumentException("Cost price cannot be negative.");
+        }
         String unit = dto.unit == null || dto.unit.trim().isEmpty() ? "pc" : Text.oneLine(dto.unit);
         String category = dto.category == null || dto.category.trim().isEmpty() ? "General" : Text.oneLine(dto.category);
         String barcode = Text.oneLine(dto.barcode);
+        java.math.BigDecimal cost = dto.costPrice == null ? Money.ZERO : Money.of(dto.costPrice);
         return new Item(id == null ? null : Text.oneLine(id), branchId, Text.oneLine(dto.name), category, unit,
-                Money.of(dto.price), dto.taxRatePercent, dto.stock, barcode, dto.reorderLevel);
+                Money.of(dto.price), cost, dto.taxRatePercent, dto.stock, barcode, dto.reorderLevel);
     }
 
     // ---------------- invoices ----------------
@@ -679,16 +731,46 @@ public class ApiHandler implements HttpHandler {
         d.refundCount = refundsInScope.size();
         d.netSales = round2(total - refundTotal);
 
-        // category lookup from the relevant catalogue(s)
+        // category + cost lookup from the relevant catalogue(s). Cost is the CURRENT item
+        // costPrice (we don't freeze cost onto invoice_lines - see comment on the Profit tile).
         Map<String, String> categoryOf = new LinkedHashMap<>();
+        Map<String, Double> costOf = new LinkedHashMap<>();
         for (Item it : items) {
             categoryOf.put(it.getId(), it.getCategory());
+            costOf.put(it.getId(), it.getCostPrice() == null ? 0.0 : it.getCostPrice().doubleValue());
         }
         Map<String, Double> revenueByCategory = new LinkedHashMap<>();
+        Map<String, Double> profitByCategory = new LinkedHashMap<>();
+        double totalCogs = 0;             // cost of goods sold (only for lines with a positive cost)
+        double coveredRevenue = 0;        // revenue on lines that HAD a cost - so margin % isn't skewed by zero-cost items
+        boolean anyItemHasCost = false;
+        for (Item it : items) {
+            if (it.getCostPrice() != null && it.getCostPrice().signum() > 0) {
+                anyItemHasCost = true;
+                break;
+            }
+        }
         for (Invoice inv : invoices) {
             for (InvoiceLine line : inv.getLines()) {
                 String cat = categoryOf.getOrDefault(line.getItemId(), "Other");
-                revenueByCategory.merge(cat, line.getAmount().doubleValue(), Double::sum);
+                double amount = line.getAmount().doubleValue();
+                revenueByCategory.merge(cat, amount, Double::sum);
+                double cost = costOf.getOrDefault(line.getItemId(), 0.0) * line.getQuantity();
+                if (cost > 0) {
+                    profitByCategory.merge(cat, amount - cost, Double::sum);
+                    totalCogs += cost;
+                    coveredRevenue += amount;
+                }
+            }
+        }
+        // Attribute refunds against cost as well - a returned item de-books both the revenue AND the cost.
+        for (Refund r : refundsInScope) {
+            for (InvoiceLine rl : r.getLines()) {
+                double c = costOf.getOrDefault(rl.getItemId(), 0.0) * rl.getQuantity();
+                if (c > 0) {
+                    totalCogs -= c;
+                    coveredRevenue -= rl.getAmount().doubleValue();
+                }
             }
         }
         d.categoryRevenue = new ArrayList<>();
@@ -696,6 +778,20 @@ public class ApiHandler implements HttpHandler {
                 .sorted((a, b) -> Double.compare(b.getValue(), a.getValue()))
                 .limit(6)
                 .forEach(e -> d.categoryRevenue.add(new Dtos.CategoryRevenueDto(e.getKey(), round2(e.getValue()))));
+
+        d.categoryProfit = new ArrayList<>();
+        profitByCategory.entrySet().stream()
+                .sorted((a, b) -> Double.compare(b.getValue(), a.getValue()))
+                .limit(6)
+                .forEach(e -> d.categoryProfit.add(new Dtos.CategoryRevenueDto(e.getKey(), round2(e.getValue()))));
+
+        // "Profit" is revenue-covered-by-a-known-cost minus that cost. When no items have a cost
+        // set, profit stays zero and profitCoverage=0 so the UI can nudge the owner to set costs.
+        d.profit = round2(coveredRevenue - totalCogs);
+        d.cogs = round2(totalCogs);
+        d.grossMarginPercent = coveredRevenue > 0 ? round2((coveredRevenue - totalCogs) / coveredRevenue * 100) : 0;
+        d.profitCoverage = anyItemHasCost ? round2(coveredRevenue) : 0;   // revenue that had a known cost basis
+        d.profitCoverableRevenue = round2(total - refundTotal);           // net revenue in scope (for the "X% covered" hint)
 
         d.branchRevenue = new ArrayList<>();
         if (branchId == null) {

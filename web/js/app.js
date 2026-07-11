@@ -528,6 +528,7 @@ function switchView(name, opts) {
 const DASHBOARD_BUCKETS = [
     { key: "stats",         label: "Summary stat tiles",  hint: "The four coloured cards at the top" },
     { key: "category",      label: "Revenue by Category" },
+    { key: "profit",        label: "Profit by Category",  hint: "Needs cost prices on items" },
     { key: "topItems",      label: "Top Items" },
     { key: "payment",       label: "Payment Mix" },
     { key: "lowStock",      label: "Low Stock Alerts" },
@@ -612,13 +613,21 @@ async function loadDashboard() {
         const arrow = pct >= 0 ? "▲" : "▼";
         deltaChip = `<span class="delta-chip ${cls}" title="vs previous ${esc(periodLabel().toLowerCase())}">${arrow} ${Math.abs(pct).toFixed(1)}%</span>`;
     }
+    // Profit tile: shows margin when the owner has entered any item cost. Until then it
+    // nudges them to set costs (a single click into Products → Edit).
+    const hasCostData = Number(d.profitCoverage || 0) > 0;
+    const marginLabel = hasCostData
+        ? `${d.grossMarginPercent.toFixed(1)}% margin`
+        : "Set costs to see profit";
     const cards = [
         { ico: "💰", cls: "green", value: money(netValue), label: netLabel, nav: "invoices",
           hint: d.refundCount > 0 ? `Gross ${money(d.totalSales)} − Refunds ${money(d.refundTotal)}` : "View invoices →",
           extra: deltaChip },
+        { ico: "📈", cls: hasCostData ? "green" : "muted", value: hasCostData ? money(d.profit) : "—",
+          label: "Profit", nav: hasCostData ? "invoices" : "products",
+          hint: hasCostData ? marginLabel : "Add cost prices →" },
         { ico: "🧾", cls: "blue", value: d.invoiceCount, label: "Invoices", nav: "invoices",
           hint: d.invoiceCount > 0 ? `Avg. bill ${money(d.averageSale)}` : "No sales in period" },
-        { ico: "📦", cls: "violet", value: d.itemCount, label: "Products", nav: "products", hint: "Manage products →" },
         { ico: "⚠️", cls: d.lowStockCount > 0 ? "amber" : "muted", value: d.lowStockCount,
           label: "Low Stock", nav: "products", filter: "lowstock",
           hint: d.lowStockCount > 0 ? "Restock now →" : "All well stocked" }
@@ -647,6 +656,23 @@ async function loadDashboard() {
                 }).join("") : `<div class="mini-sub">No branches yet.</div>`}
             </div>
         </div>` : "";
+
+    // Profit by category — same shape as revenue chart but coloured differently.
+    const catProfit = d.categoryProfit || [];
+    const maxProfit = Math.max(1, ...catProfit.map(c => Math.abs(c.amount)));
+    const profitCard = `
+        <div class="card">
+            <div class="card-head"><div class="card-title">Profit by Category</div>
+                <span class="mini-sub">${hasCostData ? "current cost basis" : "no cost data yet"}</span></div>
+            <div class="card-body">
+                ${catProfit.length ? catProfit.map(c => `
+                    <div class="bar-row">
+                        <div class="bar-label"><span class="cat">${esc(c.category)}</span>
+                            <span class="amt" style="color:${c.amount < 0 ? "var(--red)" : "var(--green-dark)"}">${c.amount < 0 ? "− " : ""}${money(Math.abs(c.amount))}</span></div>
+                        <div class="bar-track"><div class="bar-fill" style="width:${Math.max(3, Math.abs(c.amount) / maxProfit * 100)}%"></div></div>
+                    </div>`).join("") : `<div class="empty-state-inline">${hasCostData ? "No sales in this period." : "Add cost prices to your products from Products → Edit to see profit."}</div>`}
+            </div>
+        </div>`;
 
     // Category chart
     const maxCat = Math.max(1, ...d.categoryRevenue.map(c => c.amount));
@@ -766,6 +792,7 @@ async function loadDashboard() {
     const bucketHtml = {
         stats: statsHtml,
         category: categoryCard,
+        profit: profitCard,
         topItems: topItemsCard,
         payment: paymentCard,
         lowStock: lowStockCard,
@@ -951,11 +978,95 @@ function openRestock(id, branchId) {
         if (sel) sel.value = branchId;
         localStorage.setItem("fm_branch", branchId);
     }
+    // The restock flow used to open the full Edit Product modal - which meant any stock
+    // number typed while cashiers were selling would clobber the live count on save
+    // (the "lost update" bug). Now it opens a dedicated Adjust-Stock dialog: the manager
+    // enters how many were received (a delta), the server adds it atomically, and no
+    // other product field is touched.
     loadItems().then(() => {
         const it = items.find(x => x.id === id);
-        if (it) openProductModal(it);
+        if (it) openAdjustStockModal(it);
         else toast("Item not found", "error");
     }).catch(() => toast("Could not load item", "error"));
+}
+
+/** Add or remove stock explicitly, without touching any other field on the product. */
+function openAdjustStockModal(item) {
+    openModal(`
+        <div class="modal" style="max-width:440px">
+            <div class="modal-head"><h3>Adjust Stock — ${esc(item.name)}</h3>
+                <button class="modal-close" id="mClose">×</button></div>
+            <div class="modal-body">
+                <p class="mini-sub" style="margin:0 0 12px">
+                    Current stock: <b>${fmtQty(item.stock)} ${esc(item.unit)}</b>
+                    &nbsp;·&nbsp; Reorder at ${fmtQty(item.reorderLevel)}
+                </p>
+                <div class="tender-chips" style="margin:0 0 12px">
+                    <button type="button" class="chip" data-mode="add">➕ Add stock (receive)</button>
+                    <button type="button" class="chip" data-mode="remove">➖ Remove (damage/waste)</button>
+                    <button type="button" class="chip" data-mode="set">= Set exact number</button>
+                </div>
+                <div class="field"><label for="adjQty" id="adjQtyLabel">Quantity to add (${esc(item.unit)})</label>
+                    <input class="input" id="adjQty" type="number" min="0" step="1" value="" autofocus></div>
+                <div class="field"><label for="adjReason">Reason (optional)</label>
+                    <input class="input" id="adjReason" placeholder="e.g. Delivery from supplier, damaged pack, stock-take correction"></div>
+                <div id="adjPreview" class="mini-sub" style="margin-top:8px"></div>
+            </div>
+            <div class="modal-foot">
+                <button class="btn" id="mCancel">Cancel</button>
+                <button class="btn btn-primary" id="mSave">Save</button>
+            </div>
+        </div>`);
+    let mode = "add"; // add | remove | set
+    const qty = () => Math.max(0, parseFloat(document.getElementById("adjQty").value) || 0);
+    const updatePreview = () => {
+        const q = qty();
+        const preview = document.getElementById("adjPreview");
+        let after = item.stock;
+        if (mode === "add") after = item.stock + q;
+        else if (mode === "remove") after = item.stock - q;
+        else if (mode === "set") after = q;
+        if (after < 0) {
+            preview.innerHTML = `<span style="color:var(--red)">That would take stock below zero.</span>`;
+        } else {
+            preview.textContent = `New stock: ${fmtQty(after)} ${item.unit}`;
+        }
+    };
+    const setMode = (m) => {
+        mode = m;
+        document.querySelectorAll("#modalRoot .chip[data-mode]").forEach(b =>
+            b.classList.toggle("active", b.dataset.mode === m));
+        const label = document.getElementById("adjQtyLabel");
+        label.textContent = m === "add" ? `Quantity to add (${item.unit})`
+                          : m === "remove" ? `Quantity to remove (${item.unit})`
+                          : `New stock (${item.unit})`;
+        updatePreview();
+        document.getElementById("adjQty").focus();
+    };
+    setMode("add");
+    document.querySelectorAll("#modalRoot .chip[data-mode]").forEach(b =>
+        b.addEventListener("click", () => setMode(b.dataset.mode)));
+    document.getElementById("adjQty").addEventListener("input", updatePreview);
+    document.getElementById("mClose").onclick = closeModal;
+    document.getElementById("mCancel").onclick = closeModal;
+    document.getElementById("mSave").onclick = () => withBusy(document.getElementById("mSave"), "Saving…", async () => {
+        const q = qty();
+        if (q <= 0) { toast("Enter a positive quantity", "error"); return; }
+        const body = {
+            branchId: currentBranchId,
+            reason: document.getElementById("adjReason").value.trim()
+        };
+        if (mode === "add") body.delta = q;
+        else if (mode === "remove") body.delta = -q;
+        else body.newStock = q;
+        try {
+            await api.post("/api/items/" + encodeURIComponent(item.id) + "/adjust-stock", body);
+            closeModal();
+            toast("Stock updated", "success");
+            await loadItems();
+            refreshCurrentView();
+        } catch (e) { toast(e.message, "error"); }
+    });
 }
 
 function refreshCurrentView() {
@@ -1359,6 +1470,7 @@ function renderProducts(filter) {
                     <td class="num">${fmtQty(it.stock)}</td>
                     <td class="num">${fmtQty(it.reorderLevel)}</td>
                     ${canEdit ? `<td class="num">
+                        <button class="btn btn-sm" data-adjust="${esc(it.id)}" title="Add or remove stock">📦 Adjust</button>
                         <button class="btn btn-sm" data-edit="${esc(it.id)}">Edit</button>
                         <button class="btn btn-sm btn-danger" data-del="${esc(it.id)}">Delete</button>
                     </td>` : ""}
@@ -1380,6 +1492,8 @@ function renderProducts(filter) {
         document.getElementById("addProdBtn").onclick = () => openProductModal(null);
         view.querySelectorAll("button[data-edit]").forEach(b =>
             b.onclick = () => openProductModal(items.find(x => x.id === b.dataset.edit)));
+        view.querySelectorAll("button[data-adjust]").forEach(b =>
+            b.onclick = () => openAdjustStockModal(items.find(x => x.id === b.dataset.adjust)));
         view.querySelectorAll("button[data-del]").forEach(b =>
             b.onclick = () => confirmDeleteProduct(b.dataset.del));
     }
@@ -1405,14 +1519,26 @@ function openProductModal(item) {
                         <select class="input" id="fUnit">${units.map(u => `<option ${editing && item.unit === u ? "selected" : ""}>${u}</option>`).join("")}</select></div>
                 </div>
                 <div class="field-row">
-                    <div class="field"><label for="fPrice">Price (${esc(store.currency)})</label>
+                    <div class="field"><label for="fPrice">Selling Price (${esc(store.currency)})</label>
                         <input class="input" id="fPrice" type="number" min="0" step="0.01" value="${editing ? item.price : "0"}"></div>
-                    <div class="field"><label for="fTax">GST %</label>
-                        <select class="input" id="fTax">${taxes.map(t => `<option ${editing && item.taxRatePercent === t ? "selected" : ""}>${t}</option>`).join("")}</select></div>
+                    <div class="field"><label for="fCost">Cost Price (${esc(store.currency)})
+                        <span class="mini-sub">— what you paid</span></label>
+                        <input class="input" id="fCost" type="number" min="0" step="0.01" value="${editing ? (item.costPrice || 0) : "0"}"></div>
                 </div>
                 <div class="field-row">
-                    <div class="field"><label for="fStock">Stock</label>
-                        <input class="input" id="fStock" type="number" min="0" step="1" value="${editing ? fmtQty(item.stock) : "0"}"></div>
+                    <div class="field"><label for="fTax">GST %</label>
+                        <select class="input" id="fTax">${taxes.map(t => `<option ${editing && item.taxRatePercent === t ? "selected" : ""}>${t}</option>`).join("")}</select></div>
+                    <div class="field"></div>
+                </div>
+                <div class="field-row">
+                    ${editing ? `<div class="field">
+                        <label>Current Stock</label>
+                        <div class="input" style="background:var(--bg);color:var(--muted);cursor:default">
+                            ${fmtQty(item.stock)} ${esc(item.unit)}
+                            <span class="mini-sub" style="margin-left:8px">Use “Adjust Stock” to change</span>
+                        </div></div>`
+                    : `<div class="field"><label for="fStock">Initial Stock</label>
+                        <input class="input" id="fStock" type="number" min="0" step="1" value="0"></div>`}
                     <div class="field"><label for="fReorder">Reorder Alert At</label>
                         <input class="input" id="fReorder" type="number" min="0" step="1" value="${editing ? fmtQty(item.reorderLevel) : "10"}"></div>
                 </div>
@@ -1432,6 +1558,8 @@ function openProductModal(item) {
 }
 
 async function saveProduct(editing, id) {
+    // Note: on edit, we deliberately don't send a stock value - stock only changes through
+    // the Adjust Stock action, and the server ignores stock on PUT /items/{id} anyway.
     const dto = {
         id: editing ? id : document.getElementById("fId").value.trim(),
         branchId: currentBranchId,
@@ -1439,8 +1567,9 @@ async function saveProduct(editing, id) {
         category: document.getElementById("fCat").value.trim(),
         unit: document.getElementById("fUnit").value,
         price: Math.max(0, parseFloat(document.getElementById("fPrice").value) || 0),
+        costPrice: Math.max(0, parseFloat(document.getElementById("fCost").value) || 0),
         taxRatePercent: Math.max(0, parseFloat(document.getElementById("fTax").value) || 0),
-        stock: Math.max(0, parseFloat(document.getElementById("fStock").value) || 0),
+        stock: editing ? undefined : Math.max(0, parseFloat(document.getElementById("fStock").value) || 0),
         reorderLevel: Math.max(0, parseFloat(document.getElementById("fReorder").value) || 0),
         barcode: document.getElementById("fBarcode").value.trim()
     };

@@ -572,6 +572,9 @@ tr.tbl-group-row td {
 }
 .tender-chips .chip:hover { border-color: var(--green); color: var(--green-dark); }
 .tender-chips .chip:active { transform: translateY(1px); }
+.tender-chips .chip.active {
+    background: var(--green-soft); border-color: var(--green); color: var(--green-dark);
+}
 .tender-chips .chip-clear { color: var(--muted); margin-left: auto; }
 .tender-chips .chip-clear:hover { border-color: var(--muted-2); color: var(--ink); }
 
