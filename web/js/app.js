@@ -1643,6 +1643,7 @@ function renderInvoices(all, filter) {
             ${periodControl()}
             <div class="spacer"></div>
             <span class="mini-sub">${all.length} invoice(s) · <b>${money(periodTotal)}</b></span>
+            <button class="btn btn-sm" id="csvExportBtn" title="Download this period as a CSV spreadsheet">⬇ CSV</button>
         </div>
         <div class="card"><div class="table-wrap"><table class="tbl">
             <thead><tr><th>Invoice No</th>${showBranch ? "<th>Branch</th>" : ""}<th>Date</th><th>Customer</th><th>Cashier</th><th>Payment</th>
@@ -1676,6 +1677,15 @@ function renderInvoices(all, filter) {
         b.onclick = () => window.open(b.dataset.pdf, "_blank"));
     view.querySelectorAll("button[data-return]").forEach(b =>
         b.onclick = () => openReturnModal(b.dataset.return));
+    const csvBtn = document.getElementById("csvExportBtn");
+    if (csvBtn) csvBtn.onclick = () => {
+        const pr = periodRange();
+        const q = buildQuery({
+            branchId: session.role === "ADMIN" ? (currentBranchId || "all") : null,
+            from: pr.from, to: pr.to
+        });
+        window.open("/api/invoices.csv" + q, "_blank");
+    };
 }
 
 function invoicesSubTabs() {
@@ -2031,6 +2041,7 @@ async function renderZReportTab(body) {
             ${isAdmin ? `<div class="field" style="max-width:220px;margin:0"><label for="zBranch">Branch</label>
                 <select class="input" id="zBranch"></select></div>` : ""}
             <div class="spacer"></div>
+            <button class="btn" id="zPdf" title="Download this Z-report as a PDF">⬇ PDF</button>
             <button class="btn" id="zPrint">🖨️ Print</button>
         </div>
         <div id="zReportBody"><div class="empty-state">Loading…</div></div>`;
@@ -2056,6 +2067,11 @@ async function renderZReportTab(body) {
     }
     document.getElementById("zDate").onchange = load;
     document.getElementById("zPrint").onclick = () => window.print();
+    document.getElementById("zPdf").onclick = () => {
+        const dt = document.getElementById("zDate").value || today;
+        const b = isAdmin ? document.getElementById("zBranch").value : session.branchId;
+        window.open("/api/reports/z.pdf" + buildQuery({ date: dt, branchId: b }), "_blank");
+    };
     load();
 }
 

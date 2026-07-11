@@ -124,6 +124,8 @@ public class ApiHandler implements HttpHandler {
             Http.sendJson(ex, 200, buildDashboard(ex, user));
         } else if (sub.equals("/reports/z") && method.equals("GET")) {
             Http.sendJson(ex, 200, buildZReport(ex, user));
+        } else if (sub.equals("/reports/z.pdf") && method.equals("GET")) {
+            handleZReportPdf(ex, user);
         } else if (sub.equals("/items") && method.equals("GET")) {
             handleListItems(ex, user);
         } else if (sub.equals("/items") && method.equals("POST")) {
@@ -135,6 +137,8 @@ public class ApiHandler implements HttpHandler {
             handleUpdateItem(ex, user, sub.substring("/items/".length()));
         } else if (sub.startsWith("/items/") && method.equals("DELETE")) {
             handleDeleteItem(ex, user, sub.substring("/items/".length()));
+        } else if (sub.equals("/invoices.csv") && method.equals("GET")) {
+            handleInvoicesCsv(ex, user);
         } else if (sub.equals("/invoices") && method.equals("GET")) {
             handleListInvoices(ex, user);
         } else if (sub.startsWith("/invoices/") && sub.endsWith("/pdf") && method.equals("GET")) {
@@ -516,6 +520,126 @@ public class ApiHandler implements HttpHandler {
     }
 
     // ---------------- invoices ----------------
+
+    /**
+     * Period CSV export of invoices for the accountant / GST filing. Accepts the same
+     * {@code ?from}, {@code ?to}, {@code ?branchId} query params as the JSON list endpoint. One row
+     * per invoice, columns cover the totals + tax split (CGST/SGST/IGST) so an accountant can
+     * hand it straight into a GSTR-1 workbook. Fields are RFC-4180 quoted; the response prompts
+     * a download with a date-stamped filename.
+     */
+    private void handleInvoicesCsv(HttpExchange ex, User user) throws IOException {
+        String branchId = resolveBranchIdOrAll(ex, user);
+        List<Invoice> list = branchId == null ? ctx.invoiceStore().getAll() : ctx.invoiceStore().getAllForBranch(branchId);
+        list = filterByDate(ex, list);
+
+        StringBuilder sb = new StringBuilder(4096);
+        sb.append("Invoice No,Date,Branch,Cashier,Customer,Phone,Payment,Place of Supply,"
+                + "Sub Total,Discount,CGST,SGST,IGST,Round Off,Grand Total\r\n");
+        for (Invoice inv : list) {
+            Dtos.InvoiceDto d = Mappers.invoice(inv, ctx.branches());
+            sb.append(csvCell(inv.getInvoiceNo())).append(',')
+              .append(csvCell(d.dateTime)).append(',')
+              .append(csvCell(d.branchName)).append(',')
+              .append(csvCell(inv.getCashierUsername())).append(',')
+              .append(csvCell(inv.getCustomerName())).append(',')
+              .append(csvCell(inv.getCustomerPhone())).append(',')
+              .append(csvCell(inv.getPaymentMode())).append(',')
+              .append(csvCell(inv.getPlaceOfSupplyStateCode())).append(',')
+              .append(Money.format(inv.getSubTotal())).append(',')
+              .append(Money.format(inv.getDiscount())).append(',')
+              .append(Money.format(inv.getCgst())).append(',')
+              .append(Money.format(inv.getSgst())).append(',')
+              .append(Money.format(inv.getIgst())).append(',')
+              .append(Money.format(inv.getRoundOff())).append(',')
+              .append(Money.format(inv.getGrandTotal())).append("\r\n");
+        }
+        Map<String, String> q = Http.queryParams(ex);
+        String stamp = q.getOrDefault("from", "all") + "_to_" + q.getOrDefault("to", "all");
+        ex.getResponseHeaders().set("Content-Disposition",
+                "attachment; filename=\"invoices-" + stamp + ".csv\"");
+        Http.sendBytes(ex, 200, "text/csv; charset=utf-8",
+                sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    /** RFC-4180 minimal quoting: wrap in quotes if it contains a comma, quote, or CR/LF. */
+    private static String csvCell(String s) {
+        if (s == null) return "";
+        boolean needs = s.indexOf(',') >= 0 || s.indexOf('"') >= 0 || s.indexOf('\n') >= 0 || s.indexOf('\r') >= 0;
+        if (!needs) return s;
+        return "\"" + s.replace("\"", "\"\"") + "\"";
+    }
+
+    /**
+     * Printable Z-report PDF - the day-end/reconciliation sheet the owner or accountant wants to
+     * keep. Reuses the same buildZReport() the JSON endpoint returns; rendering leans on the
+     * hand-rolled PdfDocument that already ships the invoice PDFs.
+     */
+    private void handleZReportPdf(HttpExchange ex, User user) throws IOException {
+        Dtos.ZReportDto z = buildZReport(ex, user);
+        String cur = ctx.store().getCurrency() + " ";
+        grocery.pdf.PdfDocument d = new grocery.pdf.PdfDocument();
+        d.newPage();
+        float y = 60;
+        d.text(50, y, 18, true, "Day-End Z-Report");
+        y += 22;
+        d.text(50, y, 11, false, z.branchName + "  ·  " + z.date);
+        y += 22;
+        // Left column of "totals" table, right column of "payment mix".
+        d.text(50, y, 11, true, "Totals");
+        d.text(320, y, 11, true, "Payment Mix");
+        y += 16;
+        float ty = y;
+        String[][] rows = {
+                {"Sub Total",     cur + Money.format(java.math.BigDecimal.valueOf(z.subTotal))},
+                {"Discounts",     "- " + cur + Money.format(java.math.BigDecimal.valueOf(z.discount))},
+                {"CGST",          cur + Money.format(java.math.BigDecimal.valueOf(z.cgst))},
+                {"SGST",          cur + Money.format(java.math.BigDecimal.valueOf(z.sgst))},
+                {"IGST",          cur + Money.format(java.math.BigDecimal.valueOf(z.igst))},
+                {"Round Off",     cur + Money.format(java.math.BigDecimal.valueOf(z.roundOff))},
+                {"Grand Total",   cur + Money.format(java.math.BigDecimal.valueOf(z.grandTotal))},
+                {"Refunds (" + z.refundCount + ")", "- " + cur + Money.format(java.math.BigDecimal.valueOf(z.refundTotal))},
+                {"Net Sales",     cur + Money.format(java.math.BigDecimal.valueOf(z.netSales))},
+                {"Cash in Drawer",cur + Money.format(java.math.BigDecimal.valueOf(z.cashInDrawer))},
+                {"Invoice Range", (z.firstInvoiceNo == null ? "-" : z.firstInvoiceNo) + " to "
+                                 + (z.lastInvoiceNo == null ? "-" : z.lastInvoiceNo)}
+        };
+        for (String[] row : rows) {
+            d.text(50, ty, 10.5f, false, row[0]);
+            d.text(280 - d.textWidth(row[1], 10.5f), ty, 10.5f, false, row[1]);
+            ty += 14;
+        }
+        // Payment mix column
+        float py = y;
+        if (z.byPayment != null) {
+            for (Dtos.PaymentBreakdownDto p : z.byPayment) {
+                d.text(320, py, 10.5f, false, p.mode + "  (" + p.count + ")");
+                String amt = cur + Money.format(java.math.BigDecimal.valueOf(p.amount));
+                d.text(540 - d.textWidth(amt, 10.5f), py, 10.5f, false, amt);
+                py += 14;
+            }
+        }
+        // Top items block below both columns
+        float bottomY = Math.max(ty, py) + 20;
+        d.text(50, bottomY, 11, true, "Top Items (by revenue)");
+        bottomY += 16;
+        if (z.topItems != null) {
+            for (Dtos.TopItemDto t : z.topItems) {
+                d.text(50, bottomY, 10.5f, false, t.name);
+                String qty = grocery.util.Money.format(java.math.BigDecimal.valueOf(t.quantity))
+                        + (t.unit == null ? "" : " " + t.unit);
+                d.text(340, bottomY, 10.5f, false, qty);
+                String amt = cur + Money.format(java.math.BigDecimal.valueOf(t.amount));
+                d.text(540 - d.textWidth(amt, 10.5f), bottomY, 10.5f, false, amt);
+                bottomY += 14;
+            }
+        }
+        byte[] bytes = d.toBytes();
+        String filename = "z-report-" + z.date + ".pdf";
+        ex.getResponseHeaders().set("Content-Disposition", "inline; filename=\"" + filename + "\"");
+        Http.sendBytes(ex, 200, "application/pdf", bytes);
+    }
+
 
     private void handleListInvoices(HttpExchange ex, User user) throws IOException {
         String branchId = resolveBranchIdOrAll(ex, user);
