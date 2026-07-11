@@ -9,17 +9,32 @@ public class Branch {
     private String addressLine2;
     private String phone;
     private String gstin;
+    private String stateCode;    // GST state code (e.g. "TN", "KA", "33"). "" = unknown, treat as intra-state.
     private boolean active;
 
     public Branch(String id, String name, String addressLine1, String addressLine2,
                   String phone, String gstin, boolean active) {
+        this(id, name, addressLine1, addressLine2, phone, gstin, "", active);
+    }
+
+    public Branch(String id, String name, String addressLine1, String addressLine2,
+                  String phone, String gstin, String stateCode, boolean active) {
         this.id = id;
         this.name = name;
         this.addressLine1 = addressLine1;
         this.addressLine2 = addressLine2;
         this.phone = phone;
         this.gstin = gstin;
+        this.stateCode = stateCode == null ? "" : stateCode;
         this.active = active;
+    }
+
+    public String getStateCode() {
+        return stateCode;
+    }
+
+    public void setStateCode(String stateCode) {
+        this.stateCode = stateCode == null ? "" : stateCode;
     }
 
     public String getId() {

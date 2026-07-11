@@ -123,7 +123,7 @@ public class Main {
 
         BranchService branches = new BranchService(db, store);
         InventoryService inventory = new InventoryService(db, branches.defaultBranchId());
-        InvoiceStore invoiceStore = new InvoiceStore(db);
+        InvoiceStore invoiceStore = new InvoiceStore(db, branches);
         RefundService refunds = new RefundService(db);
         UserService users = new UserService(db);
         AuditLogService auditLog = new AuditLogService(db);

@@ -92,7 +92,9 @@ public final class Db {
                     "addressLine2 TEXT NOT NULL DEFAULT '', " +
                     "phone TEXT NOT NULL DEFAULT '', " +
                     "gstin TEXT NOT NULL DEFAULT '', " +
+                    "stateCode TEXT NOT NULL DEFAULT '', " +
                     "active INTEGER NOT NULL DEFAULT 1)");
+            addColumnIfMissing(st, "branches", "stateCode", "TEXT NOT NULL DEFAULT ''");
 
             st.execute("CREATE TABLE IF NOT EXISTS items (" +
                     "id TEXT PRIMARY KEY, " +
@@ -134,7 +136,9 @@ public final class Db {
                     "discount TEXT NOT NULL, " +
                     "totalTax TEXT NOT NULL, " +
                     "grandTotal TEXT NOT NULL, " +
-                    "amountPaid TEXT NOT NULL)");
+                    "amountPaid TEXT NOT NULL, " +
+                    "placeOfSupplyStateCode TEXT NOT NULL DEFAULT '')");
+            addColumnIfMissing(st, "invoices", "placeOfSupplyStateCode", "TEXT NOT NULL DEFAULT ''");
             st.execute("CREATE INDEX IF NOT EXISTS idx_invoices_branchId ON invoices(branchId)");
             st.execute("CREATE INDEX IF NOT EXISTS idx_invoices_dateTime ON invoices(dateTime)");
             // Z-report groups sales by cashier at the end of every shift - without this

@@ -59,6 +59,9 @@ public final class Dtos {
         public double discount;
         /** Cash / card tendered by the customer. Optional (zero = "not captured"). */
         public double amountPaid;
+        /** Buyer's state code for GST place-of-supply. Empty defaults to the branch's own state
+         *  (intra-state). When different from the branch's state, the bill splits as IGST. */
+        public String placeOfSupplyStateCode;
         public List<CheckoutLineDto> lines;
     }
 
@@ -88,6 +91,10 @@ public final class Dtos {
         public double totalTax;
         public double cgst;
         public double sgst;
+        /** GST charged as IGST when the sale is inter-state (place-of-supply state != branch state); else zero. */
+        public double igst;
+        public boolean interState;
+        public String placeOfSupplyStateCode;
         public double netAmount;
         public double roundOff;
         public double grandTotal;
@@ -203,6 +210,8 @@ public final class Dtos {
         public String addressLine2;
         public String phone;
         public String gstin;
+        /** GST state code (e.g. "TN", "KA") - drives IGST vs CGST/SGST at checkout. */
+        public String stateCode;
         public boolean active;
         /** Only used when creating a branch: seed its catalogue from this existing branch's items. */
         public String cloneFromBranchId;
@@ -328,6 +337,7 @@ public final class Dtos {
         public double discount;
         public double cgst;
         public double sgst;
+        public double igst;
         public double roundOff;
         public double grandTotal;
         public double cashSales;

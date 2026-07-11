@@ -178,10 +178,15 @@ public class InvoicePdfGenerator {
             y += 16;
         }
         if (inv.getTotalTax().compareTo(Money.ZERO) > 0) {
-            totalLine(d, labelX, right, y, "CGST", cur + Money.format(inv.getCgst()));
-            y += 16;
-            totalLine(d, labelX, right, y, "SGST", cur + Money.format(inv.getSgst()));
-            y += 16;
+            if (inv.isInterState()) {
+                totalLine(d, labelX, right, y, "IGST", cur + Money.format(inv.getIgst()));
+                y += 16;
+            } else {
+                totalLine(d, labelX, right, y, "CGST", cur + Money.format(inv.getCgst()));
+                y += 16;
+                totalLine(d, labelX, right, y, "SGST", cur + Money.format(inv.getSgst()));
+                y += 16;
+            }
         }
         if (inv.getRoundOff().compareTo(Money.ZERO) != 0) {
             String sign = inv.getRoundOff().signum() > 0 ? "+ " : "- ";

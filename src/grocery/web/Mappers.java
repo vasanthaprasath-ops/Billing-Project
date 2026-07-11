@@ -57,6 +57,7 @@ public final class Mappers {
         d.addressLine2 = b.getAddressLine2();
         d.phone = b.getPhone();
         d.gstin = b.getGstin();
+        d.stateCode = b.getStateCode();
         d.active = b.isActive();
         return d;
     }
@@ -119,6 +120,9 @@ public final class Mappers {
         d.totalTax = inv.getTotalTax().doubleValue();
         d.cgst = inv.getCgst().doubleValue();
         d.sgst = inv.getSgst().doubleValue();
+        d.igst = inv.getIgst().doubleValue();
+        d.interState = inv.isInterState();
+        d.placeOfSupplyStateCode = inv.getPlaceOfSupplyStateCode();
         d.netAmount = inv.getNetAmount().doubleValue();
         d.roundOff = inv.getRoundOff().doubleValue();
         d.grandTotal = inv.getGrandTotal().doubleValue();

@@ -56,6 +56,22 @@ public class BillingService {
                             String paymentMode, BigDecimal discount, BigDecimal amountPaid,
                             List<LineRequest> requests,
                             InventoryService inventory, InvoiceStore invoiceStore) {
+        return checkout(branchId, cashierUsername, customerName, customerPhone, paymentMode, discount,
+                amountPaid, requests, inventory, invoiceStore, "", "");
+    }
+
+    /**
+     * Full-form checkout: additionally carries the {@code placeOfSupplyStateCode} (buyer's
+     * state) and {@code branchStateCode} (the branch's own state) so the resulting invoice
+     * knows whether to split GST as CGST/SGST (intra-state) or IGST (inter-state). Callers
+     * that don't have those (demo/self-test) use the shorter overload above, which defaults
+     * both to empty and yields the historical intra-state behaviour.
+     */
+    public Invoice checkout(String branchId, String cashierUsername, String customerName, String customerPhone,
+                            String paymentMode, BigDecimal discount, BigDecimal amountPaid,
+                            List<LineRequest> requests,
+                            InventoryService inventory, InvoiceStore invoiceStore,
+                            String placeOfSupplyStateCode, String branchStateCode) {
 
         if (requests == null || requests.isEmpty()) {
             throw new IllegalStateException("The cart is empty - add at least one item.");
@@ -117,7 +133,7 @@ public class BillingService {
         db.inTransaction(() -> {
             inventory.reserveStock(branchId, stockRequests);
             result.set(invoiceStore.createAndSave(branchId, cashierUsername, name, phone, mode,
-                    lines, safeDiscount, safePaid));
+                    lines, safeDiscount, safePaid, placeOfSupplyStateCode, branchStateCode));
         });
         return result.get();
     }

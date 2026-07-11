@@ -109,28 +109,30 @@ public class BranchService {
     // ---------------- persistence ----------------
 
     private void insert(Branch b) {
-        db.update("INSERT INTO branches(id, name, addressLine1, addressLine2, phone, gstin, active) " +
-                "VALUES(?,?,?,?,?,?,?)", ps -> {
+        db.update("INSERT INTO branches(id, name, addressLine1, addressLine2, phone, gstin, stateCode, active) " +
+                "VALUES(?,?,?,?,?,?,?,?)", ps -> {
             ps.setString(1, b.getId());
             ps.setString(2, b.getName());
             ps.setString(3, b.getAddressLine1());
             ps.setString(4, b.getAddressLine2());
             ps.setString(5, b.getPhone());
             ps.setString(6, b.getGstin());
-            ps.setInt(7, b.isActive() ? 1 : 0);
+            ps.setString(7, b.getStateCode());
+            ps.setInt(8, b.isActive() ? 1 : 0);
         });
     }
 
     private void updateRow(Branch b) {
-        db.update("UPDATE branches SET name=?, addressLine1=?, addressLine2=?, phone=?, gstin=?, active=? " +
+        db.update("UPDATE branches SET name=?, addressLine1=?, addressLine2=?, phone=?, gstin=?, stateCode=?, active=? " +
                 "WHERE id=?", ps -> {
             ps.setString(1, b.getName());
             ps.setString(2, b.getAddressLine1());
             ps.setString(3, b.getAddressLine2());
             ps.setString(4, b.getPhone());
             ps.setString(5, b.getGstin());
-            ps.setInt(6, b.isActive() ? 1 : 0);
-            ps.setString(7, b.getId());
+            ps.setString(6, b.getStateCode());
+            ps.setInt(7, b.isActive() ? 1 : 0);
+            ps.setString(8, b.getId());
         });
     }
 
@@ -141,7 +143,7 @@ public class BranchService {
     private static Branch mapRow(ResultSet rs) throws SQLException {
         return new Branch(rs.getString("id"), rs.getString("name"), rs.getString("addressLine1"),
                 rs.getString("addressLine2"), rs.getString("phone"), rs.getString("gstin"),
-                rs.getInt("active") != 0);
+                rs.getString("stateCode"), rs.getInt("active") != 0);
     }
 
     // ---------------- legacy CSV parsing (one-time SQLite migration only) ----------------

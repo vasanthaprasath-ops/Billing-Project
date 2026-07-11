@@ -109,10 +109,15 @@ public class ThermalReceiptPdfGenerator {
             y += LH;
         }
         if (inv.getTotalTax().compareTo(Money.ZERO) > 0) {
-            labelValue(d, y, 8.5f, false, "CGST", cur + Money.format(inv.getCgst()));
-            y += LH;
-            labelValue(d, y, 8.5f, false, "SGST", cur + Money.format(inv.getSgst()));
-            y += LH;
+            if (inv.isInterState()) {
+                labelValue(d, y, 8.5f, false, "IGST", cur + Money.format(inv.getIgst()));
+                y += LH;
+            } else {
+                labelValue(d, y, 8.5f, false, "CGST", cur + Money.format(inv.getCgst()));
+                y += LH;
+                labelValue(d, y, 8.5f, false, "SGST", cur + Money.format(inv.getSgst()));
+                y += LH;
+            }
         }
         if (inv.getRoundOff().compareTo(Money.ZERO) != 0) {
             String sign = inv.getRoundOff().signum() > 0 ? "+" : "-";

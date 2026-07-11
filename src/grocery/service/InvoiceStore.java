@@ -36,10 +36,19 @@ public class InvoiceStore {
     private static final DateTimeFormatter STAMP = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
 
     private final Db db;
+    /** Used at load-time to reconstruct interState correctly for historical invoices (compare
+     *  each invoice's placeOfSupplyStateCode against its branch's current stateCode). Nullable
+     *  for the legacy no-branch constructor still used by tests. */
+    private final BranchService branches;
     private final List<Invoice> invoices = new ArrayList<>();
 
     public InvoiceStore(Db db) {
+        this(db, null);
+    }
+
+    public InvoiceStore(Db db, BranchService branches) {
         this.db = db;
+        this.branches = branches;
         loadFromDb();
     }
 
@@ -82,11 +91,25 @@ public class InvoiceStore {
                                               String customerPhone, String paymentMode,
                                               List<InvoiceLine> lines, BigDecimal discount,
                                               BigDecimal amountPaid) {
+        return createAndSave(branchId, cashierUsername, customerName, customerPhone, paymentMode,
+                lines, discount, amountPaid, "", "");
+    }
+
+    /**
+     * Full-form createAndSave: additionally carries the {@code placeOfSupplyStateCode} (buyer's
+     * state) and the branch's own {@code branchStateCode}, which together decide whether this
+     * bill is inter-state (IGST) or intra-state (CGST+SGST). Callers that don't know GST
+     * place-of-supply (headless demo, legacy CSV migration) use the shorter overload above and
+     * the invoice defaults to intra-state (historical behaviour).
+     */
+    public synchronized Invoice createAndSave(String branchId, String cashierUsername, String customerName,
+                                              String customerPhone, String paymentMode,
+                                              List<InvoiceLine> lines, BigDecimal discount,
+                                              BigDecimal amountPaid,
+                                              String placeOfSupplyStateCode, String branchStateCode) {
         Invoice invoice = new Invoice(nextInvoiceNoLocked(), branchId, cashierUsername, Time.now(),
-                customerName, customerPhone, paymentMode, lines, discount, amountPaid);
-        // Persist first; only mint the in-memory record once the transaction commits.
-        // The previous order let a rolled-back invoice leave a ghost in the list, which
-        // permanently skewed nextInvoiceNoLocked() by consuming that number.
+                customerName, customerPhone, paymentMode, lines, discount, amountPaid,
+                placeOfSupplyStateCode, branchStateCode);
         db.inTransaction(() -> {
             insertHeader(invoice);
             for (InvoiceLine line : invoice.getLines()) {
@@ -117,8 +140,9 @@ public class InvoiceStore {
 
     private void insertHeader(Invoice inv) {
         db.update("INSERT INTO invoices(invoiceNo, branchId, cashierUsername, dateTime, customerName, " +
-                "customerPhone, paymentMode, subTotal, discount, totalTax, grandTotal, amountPaid) " +
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", ps -> {
+                "customerPhone, paymentMode, subTotal, discount, totalTax, grandTotal, amountPaid, " +
+                "placeOfSupplyStateCode) " +
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", ps -> {
             ps.setString(1, inv.getInvoiceNo());
             ps.setString(2, inv.getBranchId());
             ps.setString(3, inv.getCashierUsername());
@@ -131,6 +155,7 @@ public class InvoiceStore {
             ps.setString(10, Money.format(inv.getTotalTax()));
             ps.setString(11, Money.format(inv.getGrandTotal()));
             ps.setString(12, Money.format(inv.getAmountPaid()));
+            ps.setString(13, inv.getPlaceOfSupplyStateCode() == null ? "" : inv.getPlaceOfSupplyStateCode());
         });
     }
 
@@ -154,7 +179,7 @@ public class InvoiceStore {
         for (LineRow row : db.query("SELECT * FROM invoice_lines", InvoiceStore::mapLineRow)) {
             linesByInvoice.computeIfAbsent(row.invoiceNo, k -> new ArrayList<>()).add(row.line);
         }
-        for (Invoice inv : db.query("SELECT * FROM invoices", rs -> mapHeaderRow(rs, linesByInvoice))) {
+        for (Invoice inv : db.query("SELECT * FROM invoices", rs -> mapHeaderRow(rs, linesByInvoice, branches))) {
             invoices.add(inv);
         }
     }
@@ -178,14 +203,39 @@ public class InvoiceStore {
         return new LineRow(rs.getString("invoiceNo"), line);
     }
 
-    private static Invoice mapHeaderRow(ResultSet rs, Map<String, List<InvoiceLine>> linesByInvoice)
-            throws SQLException {
+    private static Invoice mapHeaderRow(ResultSet rs, Map<String, List<InvoiceLine>> linesByInvoice,
+                                        BranchService branches) throws SQLException {
         String invoiceNo = rs.getString("invoiceNo");
         List<InvoiceLine> lines = linesByInvoice.getOrDefault(invoiceNo, new ArrayList<>());
         LocalDateTime when = parseStamp(rs.getString("dateTime"));
-        return new Invoice(invoiceNo, rs.getString("branchId"), rs.getString("cashierUsername"), when,
+        String branchId = rs.getString("branchId");
+        String placeOfSupply = readOptionalString(rs, "placeOfSupplyStateCode");
+        String branchStateCode = "";
+        if (branches != null) {
+            try {
+                grocery.model.Branch b = branches.findById(branchId);
+                if (b != null) {
+                    branchStateCode = b.getStateCode();
+                }
+            } catch (RuntimeException ignore) {
+                // Best-effort - if branch state is unknown at load time, we fall through
+                // to intra-state (empty branchStateCode -> interState=false).
+            }
+        }
+        return new Invoice(invoiceNo, branchId, rs.getString("cashierUsername"), when,
                 rs.getString("customerName"), rs.getString("customerPhone"), rs.getString("paymentMode"),
-                lines, Money.parse(rs.getString("discount")), Money.parse(rs.getString("amountPaid")));
+                lines, Money.parse(rs.getString("discount")), Money.parse(rs.getString("amountPaid")),
+                placeOfSupply, branchStateCode);
+    }
+
+    /** Reads {@code column} as a string, returning "" if the column doesn't exist yet on very old DBs. */
+    private static String readOptionalString(ResultSet rs, String column) {
+        try {
+            String v = rs.getString(column);
+            return v == null ? "" : v;
+        } catch (SQLException e) {
+            return "";
+        }
     }
 
     private static LocalDateTime parseStamp(String s) {

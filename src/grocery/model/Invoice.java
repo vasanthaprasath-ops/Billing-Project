@@ -29,17 +29,33 @@ public class Invoice {
     private final BigDecimal roundOff;    // adjustment to reach the nearest rupee
     private final BigDecimal grandTotal;  // final payable, rounded to the nearest rupee
     private final BigDecimal amountPaid;  // cash/card tendered - >= grandTotal (change = paid - grand)
+    /** Buyer's state code for GST place-of-supply. When set and different from the branch's
+     *  own state, the invoice is treated as inter-state and the tax splits as IGST instead
+     *  of CGST/SGST. Empty/null means "same state as the branch" (intra-state, the historical default). */
+    private final String placeOfSupplyStateCode;
+    /** True iff placeOfSupplyStateCode is set AND differs from branchStateCode. Cached because
+     *  the branch is not part of this object and the caller (mapper / PDF) shouldn't have to
+     *  compute this each time. */
+    private final boolean interState;
 
     public Invoice(String invoiceNo, String branchId, String cashierUsername, LocalDateTime dateTime,
                    String customerName, String customerPhone, String paymentMode,
                    List<InvoiceLine> lines, BigDecimal discount) {
         this(invoiceNo, branchId, cashierUsername, dateTime, customerName, customerPhone, paymentMode,
-                lines, discount, null);
+                lines, discount, null, "", "");
     }
 
     public Invoice(String invoiceNo, String branchId, String cashierUsername, LocalDateTime dateTime,
                    String customerName, String customerPhone, String paymentMode,
                    List<InvoiceLine> lines, BigDecimal discount, BigDecimal amountPaid) {
+        this(invoiceNo, branchId, cashierUsername, dateTime, customerName, customerPhone, paymentMode,
+                lines, discount, amountPaid, "", "");
+    }
+
+    public Invoice(String invoiceNo, String branchId, String cashierUsername, LocalDateTime dateTime,
+                   String customerName, String customerPhone, String paymentMode,
+                   List<InvoiceLine> lines, BigDecimal discount, BigDecimal amountPaid,
+                   String placeOfSupplyStateCode, String branchStateCode) {
         this.invoiceNo = invoiceNo;
         this.branchId = branchId;
         this.cashierUsername = cashierUsername;
@@ -48,6 +64,10 @@ public class Invoice {
         this.customerPhone = customerPhone;
         this.paymentMode = paymentMode;
         this.lines = new ArrayList<>(lines);
+        this.placeOfSupplyStateCode = placeOfSupplyStateCode == null ? "" : placeOfSupplyStateCode;
+        String bs = branchStateCode == null ? "" : branchStateCode;
+        this.interState = !this.placeOfSupplyStateCode.isEmpty() && !bs.isEmpty()
+                && !this.placeOfSupplyStateCode.equalsIgnoreCase(bs);
 
         BigDecimal sub = Money.ZERO;
         BigDecimal tax = Money.ZERO;
@@ -116,14 +136,33 @@ public class Invoice {
         return totalTax;
     }
 
-    /** Half of the GST, shown as CGST on the invoice (intra-state sale). */
+    /** Half of the GST, shown as CGST on the invoice (intra-state sale). Zero for inter-state. */
     public BigDecimal getCgst() {
+        if (interState) {
+            return Money.ZERO;
+        }
         return Money.scale(totalTax.divide(BigDecimal.valueOf(2)));
     }
 
-    /** The remaining half of the GST, shown as SGST (keeps the rounding exact). */
+    /** The remaining half of the GST, shown as SGST (keeps the rounding exact). Zero for inter-state. */
     public BigDecimal getSgst() {
+        if (interState) {
+            return Money.ZERO;
+        }
         return Money.scale(totalTax.subtract(getCgst()));
+    }
+
+    /** Full GST as IGST when the sale is inter-state (place-of-supply state differs from branch state); else zero. */
+    public BigDecimal getIgst() {
+        return interState ? Money.scale(totalTax) : Money.ZERO;
+    }
+
+    public boolean isInterState() {
+        return interState;
+    }
+
+    public String getPlaceOfSupplyStateCode() {
+        return placeOfSupplyStateCode;
     }
 
     /** Net payable before the rounding adjustment. */

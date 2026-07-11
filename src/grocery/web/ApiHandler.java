@@ -242,7 +242,8 @@ public class ApiHandler implements HttpHandler {
             throw new IllegalArgumentException("Branch name is required.");
         }
         Branch branch = new Branch(null, Text.oneLine(dto.name), nullToEmpty(dto.addressLine1),
-                nullToEmpty(dto.addressLine2), nullToEmpty(dto.phone), nullToEmpty(dto.gstin), true);
+                nullToEmpty(dto.addressLine2), nullToEmpty(dto.phone), nullToEmpty(dto.gstin),
+                nullToEmpty(dto.stateCode).toUpperCase(), true);
         ctx.branches().add(branch);
         if (dto.cloneFromBranchId != null && !dto.cloneFromBranchId.isEmpty()) {
             ctx.branches().require(dto.cloneFromBranchId);
@@ -259,7 +260,8 @@ public class ApiHandler implements HttpHandler {
             throw new IllegalArgumentException("Branch name is required.");
         }
         Branch branch = new Branch(id, Text.oneLine(dto.name), nullToEmpty(dto.addressLine1),
-                nullToEmpty(dto.addressLine2), nullToEmpty(dto.phone), nullToEmpty(dto.gstin), dto.active);
+                nullToEmpty(dto.addressLine2), nullToEmpty(dto.phone), nullToEmpty(dto.gstin),
+                nullToEmpty(dto.stateCode).toUpperCase(), dto.active);
         ctx.branches().update(branch);
         ctx.auditLog().log(user, "BRANCH_UPDATE", branch.getId() + " " + branch.getName());
         Http.sendJson(ex, 200, Mappers.branch(branch));
@@ -494,6 +496,17 @@ public class ApiHandler implements HttpHandler {
         if (dto.costPrice != null && dto.costPrice < 0) {
             throw new IllegalArgumentException("Cost price cannot be negative.");
         }
+        // Enforce the legal Indian GST slabs. Old data on disk that pre-dates this check is
+        // untouched (schema is unchanged) but any new write must land in a valid slab.
+        // Accept some floating-point slack (e.g. 5.0000001) since the value flows via double.
+        double[] slabs = {0, 5, 12, 18, 28};
+        boolean ok = false;
+        for (double s : slabs) {
+            if (Math.abs(dto.taxRatePercent - s) < 0.01) { dto.taxRatePercent = s; ok = true; break; }
+        }
+        if (!ok) {
+            throw new IllegalArgumentException("GST % must be one of 0, 5, 12, 18 or 28 (India's legal slabs).");
+        }
         String unit = dto.unit == null || dto.unit.trim().isEmpty() ? "pc" : Text.oneLine(dto.unit);
         String category = dto.category == null || dto.category.trim().isEmpty() ? "General" : Text.oneLine(dto.category);
         String barcode = Text.oneLine(dto.barcode);
@@ -583,10 +596,16 @@ public class ApiHandler implements HttpHandler {
                 lines.add(new BillingService.LineRequest(l.itemId, qty));
             }
         }
+        // GST place-of-supply: empty from the client -> intra-state (branch's own state).
+        // Uppercased so "tn" and "TN" match consistently regardless of what the client sends.
+        Branch branch = ctx.branches().findById(branchId);
+        String branchState = branch == null ? "" : branch.getStateCode();
+        String posState = req.placeOfSupplyStateCode == null ? "" : req.placeOfSupplyStateCode.trim().toUpperCase();
         Invoice invoice = ctx.billing().checkout(
                 branchId, user.getUsername(), req.customerName, req.customerPhone, req.paymentMode,
                 BigDecimal.valueOf(discount), BigDecimal.valueOf(paid),
-                lines, ctx.inventory(), ctx.invoiceStore());
+                lines, ctx.inventory(), ctx.invoiceStore(),
+                posState, branchState);
         ctx.pdfGenerator().generate(invoice, invoicesDir); // pre-generate the A4 PDF
         ctx.auditLog().log(user, "CHECKOUT", invoice.getInvoiceNo() + " " + Money.format(invoice.getGrandTotal()));
         Http.sendJson(ex, 201, Mappers.invoice(invoice, ctx.branches()));
@@ -937,7 +956,8 @@ public class ApiHandler implements HttpHandler {
         }
 
         BigDecimal sub = BigDecimal.ZERO, discount = BigDecimal.ZERO, cgst = BigDecimal.ZERO;
-        BigDecimal sgst = BigDecimal.ZERO, roundOff = BigDecimal.ZERO, grand = BigDecimal.ZERO;
+        BigDecimal sgst = BigDecimal.ZERO, igst = BigDecimal.ZERO;
+        BigDecimal roundOff = BigDecimal.ZERO, grand = BigDecimal.ZERO;
         BigDecimal cashSales = BigDecimal.ZERO, cashDrawer = BigDecimal.ZERO;
         Map<String, int[]> payCount = new LinkedHashMap<>();
         Map<String, BigDecimal> payAmount = new LinkedHashMap<>();
@@ -949,6 +969,7 @@ public class ApiHandler implements HttpHandler {
             discount = discount.add(inv.getDiscount());
             cgst = cgst.add(inv.getCgst());
             sgst = sgst.add(inv.getSgst());
+            igst = igst.add(inv.getIgst());
             roundOff = roundOff.add(inv.getRoundOff());
             grand = grand.add(inv.getGrandTotal());
             String mode = inv.getPaymentMode() == null || inv.getPaymentMode().isEmpty() ? "Other" : inv.getPaymentMode();
@@ -970,6 +991,7 @@ public class ApiHandler implements HttpHandler {
         z.discount = discount.doubleValue();
         z.cgst = cgst.doubleValue();
         z.sgst = sgst.doubleValue();
+        z.igst = igst.doubleValue();
         z.roundOff = roundOff.doubleValue();
         z.grandTotal = grand.doubleValue();
         z.cashSales = cashSales.doubleValue();

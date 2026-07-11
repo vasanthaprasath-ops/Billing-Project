@@ -1121,6 +1121,8 @@ function renderBilling() {
                             <div class="field"><label for="payMode">Payment</label>
                                 <select class="input" id="payMode"><option>Cash</option><option>Card</option><option>UPI</option></select></div>
                         </div>
+                        <div class="field"><label for="posState">Place of Supply <span class="mini-sub">— buyer's state (leave blank for local sale)</span></label>
+                            <input class="input" id="posState" maxlength="4" style="text-transform:uppercase" placeholder="e.g. TN, KA (for IGST)"></div>
                         <div class="field"><label for="discount">Discount (${esc(store.currency)})</label>
                             <input class="input" id="discount" type="number" min="0" step="0.01" value="0"></div>
                         <div class="field" id="cashPaidField"><label for="cashPaid">Cash Tendered (${esc(store.currency)})</label>
@@ -1366,6 +1368,7 @@ async function doCheckout() {
         paymentMode: payMode,
         discount: currentDiscount(),
         amountPaid: payMode === "Cash" ? cashPaid : 0,
+        placeOfSupplyStateCode: (document.getElementById("posState").value || "").trim().toUpperCase(),
         lines: cart.map(l => ({ itemId: l.id, quantity: l.qty }))
     };
     try {
@@ -1859,6 +1862,10 @@ function openBranchModal(branch, allBranches) {
                     <div class="field"><label for="fbPhone">Phone</label><input class="input" id="fbPhone" value="${editing ? esc(branch.phone) : ""}"></div>
                     <div class="field"><label for="fbGstin">GSTIN</label><input class="input" id="fbGstin" value="${editing ? esc(branch.gstin) : ""}"></div>
                 </div>
+                <div class="field"><label for="fbStateCode">State Code
+                        <span class="mini-sub">— for GST place-of-supply (e.g. TN, KA, MH)</span></label>
+                    <input class="input" id="fbStateCode" maxlength="4" style="text-transform:uppercase"
+                        value="${editing ? esc(branch.stateCode || "") : ""}"></div>
                 ${editing
                     ? `<div class="field"><label for="fbActive">Status</label>
                         <select class="input" id="fbActive">
@@ -1884,7 +1891,8 @@ function openBranchModal(branch, allBranches) {
             addressLine1: document.getElementById("fbAddr1").value.trim(),
             addressLine2: document.getElementById("fbAddr2").value.trim(),
             phone: document.getElementById("fbPhone").value.trim(),
-            gstin: document.getElementById("fbGstin").value.trim()
+            gstin: document.getElementById("fbGstin").value.trim(),
+            stateCode: document.getElementById("fbStateCode").value.trim().toUpperCase()
         };
         if (!dto.name) { toast("Branch name is required", "error"); return; }
         try {
@@ -2080,8 +2088,10 @@ function renderZReport(root, z) {
                 </div>
                 <div class="z-tile">
                     <div class="z-tile-label">GST Collected</div>
-                    <div class="z-tile-value">${money(z.cgst + z.sgst)}</div>
-                    <div class="mini-sub">CGST ${money(z.cgst)} · SGST ${money(z.sgst)}</div>
+                    <div class="z-tile-value">${money(z.cgst + z.sgst + (z.igst || 0))}</div>
+                    <div class="mini-sub">${z.igst > 0
+                        ? `CGST ${money(z.cgst)} · SGST ${money(z.sgst)} · IGST ${money(z.igst)}`
+                        : `CGST ${money(z.cgst)} · SGST ${money(z.sgst)}`}</div>
                 </div>
                 <div class="z-tile">
                     <div class="z-tile-label">Invoice Range</div>
@@ -2097,6 +2107,7 @@ function renderZReport(root, z) {
                     <tr><td>Discounts</td><td class="num money">− ${money(z.discount)}</td></tr>
                     <tr><td>CGST</td><td class="num money">${money(z.cgst)}</td></tr>
                     <tr><td>SGST</td><td class="num money">${money(z.sgst)}</td></tr>
+                    ${z.igst > 0 ? `<tr><td>IGST</td><td class="num money">${money(z.igst)}</td></tr>` : ""}
                     <tr><td>Round Off</td><td class="num money">${z.roundOff >= 0 ? "+ " : "− "}${money(Math.abs(z.roundOff))}</td></tr>
                     <tr class="z-total"><td><b>Gross Total</b></td><td class="num money"><b>${money(z.grandTotal)}</b></td></tr>
                     <tr><td>Refunds (${z.refundCount})</td><td class="num money" style="color:var(--red)">− ${money(z.refundTotal)}</td></tr>
