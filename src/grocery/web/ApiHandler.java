@@ -151,6 +151,10 @@ public class ApiHandler implements HttpHandler {
             handleInvoiceDetail(ex, user, sub.substring("/invoices/".length()));
         } else if (sub.equals("/checkout") && method.equals("POST")) {
             handleCheckout(ex, user);
+        } else if (sub.equals("/customers") && method.equals("GET")) {
+            handleListCustomers(ex, user);
+        } else if (sub.equals("/customers/history") && method.equals("GET")) {
+            handleCustomerHistory(ex, user);
         } else if (sub.equals("/refunds") && method.equals("GET")) {
             handleListRefunds(ex, user);
         } else if (sub.equals("/refunds") && method.equals("POST")) {
@@ -743,6 +747,85 @@ public class ApiHandler implements HttpHandler {
             throw new IllegalArgumentException(fieldName + " is out of range.");
         }
         return v;
+    }
+
+    // ---------------- customers (derived from invoices) ----------------
+
+    /**
+     * The store's customer list, derived from the invoices already on file. No schema change:
+     * we aggregate name+phone across every invoice in scope, so what we call a "customer" is
+     * really "all sales matched by phone number (or name, when phone is blank)". Ranked by
+     * most-recent purchase; a {@code ?q=} filter matches substrings in either field.
+     */
+    private void handleListCustomers(HttpExchange ex, User user) throws IOException {
+        String branchId = resolveBranchIdOrAll(ex, user);
+        List<Invoice> list = branchId == null ? ctx.invoiceStore().getAll() : ctx.invoiceStore().getAllForBranch(branchId);
+        String q = Http.queryParams(ex).getOrDefault("q", "").trim().toLowerCase();
+
+        // Aggregate by phone-or-name key. LinkedHashMap keeps first-seen insertion order until we sort.
+        Map<String, Dtos.CustomerSummaryDto> agg = new LinkedHashMap<>();
+        for (Invoice inv : list) {
+            String phone = inv.getCustomerPhone() == null ? "" : inv.getCustomerPhone().trim();
+            String name = inv.getCustomerName() == null ? "" : inv.getCustomerName().trim();
+            if (phone.isEmpty() && (name.isEmpty() || name.equalsIgnoreCase("Walk-in Customer"))) {
+                continue; // Anonymous walk-ins aren't customers to remember.
+            }
+            String key = phone.isEmpty() ? ("name:" + name.toLowerCase()) : ("phone:" + phone);
+            Dtos.CustomerSummaryDto c = agg.get(key);
+            if (c == null) {
+                c = new Dtos.CustomerSummaryDto();
+                c.phone = phone;
+                c.name = name;
+                agg.put(key, c);
+            }
+            c.invoiceCount++;
+            c.totalSpent += inv.getGrandTotal().doubleValue();
+            String stamped = Mappers.invoice(inv, ctx.branches()).dateTime;
+            if (c.lastVisit == null || stamped.compareTo(c.lastVisit) > 0) {
+                c.lastVisit = stamped;
+                c.lastInvoiceNo = inv.getInvoiceNo();
+                if (!name.isEmpty()) c.name = name; // prefer the latest name for that phone
+            }
+        }
+
+        List<Dtos.CustomerSummaryDto> out = new ArrayList<>(agg.values());
+        if (!q.isEmpty()) {
+            out.removeIf(c -> !(c.phone.toLowerCase().contains(q) || c.name.toLowerCase().contains(q)));
+        }
+        // Newest first - the just-served customer needs to be findable immediately.
+        out.sort((a, b) -> b.lastVisit == null ? -1 : a.lastVisit == null ? 1 : b.lastVisit.compareTo(a.lastVisit));
+        // Cap at 200: the checkout type-ahead only wants the top few, and the Customers view
+        // paginates client-side. A shop's whole customer list won't blow this up for a while.
+        if (out.size() > 200) {
+            out = out.subList(0, 200);
+        }
+        for (Dtos.CustomerSummaryDto c : out) {
+            c.totalSpent = round2(c.totalSpent);
+        }
+        Http.sendJson(ex, 200, out);
+    }
+
+    /** Every invoice matching a phone (or, if phone is blank, an exact name). Branch-scoped. */
+    private void handleCustomerHistory(HttpExchange ex, User user) throws IOException {
+        String branchId = resolveBranchIdOrAll(ex, user);
+        Map<String, String> q = Http.queryParams(ex);
+        String phone = q.getOrDefault("phone", "").trim();
+        String name = q.getOrDefault("name", "").trim();
+        if (phone.isEmpty() && name.isEmpty()) {
+            throw new IllegalArgumentException("Provide 'phone' or 'name'.");
+        }
+        List<Invoice> list = branchId == null ? ctx.invoiceStore().getAll() : ctx.invoiceStore().getAllForBranch(branchId);
+        List<Dtos.InvoiceDto> out = new ArrayList<>();
+        for (Invoice inv : list) {
+            boolean phoneMatch = !phone.isEmpty()
+                    && phone.equalsIgnoreCase(inv.getCustomerPhone() == null ? "" : inv.getCustomerPhone().trim());
+            boolean nameMatch = phone.isEmpty() && !name.isEmpty()
+                    && name.equalsIgnoreCase(inv.getCustomerName() == null ? "" : inv.getCustomerName().trim());
+            if (phoneMatch || nameMatch) {
+                out.add(Mappers.invoice(inv, ctx.branches()));
+            }
+        }
+        Http.sendJson(ex, 200, out);
     }
 
     // ---------------- refunds ----------------

@@ -484,6 +484,7 @@ const VIEW_META = {
     products: ["Products", "Manage your catalogue and stock"],
     invoices: ["Invoices", "Browse and reprint past bills"],
     dayreport: ["Day Report", "Day-end reconciliation for your till"],
+    customers: ["Customers", "Recall past customers by phone or name"],
     admin: ["Admin", "Branches, users, audit log and backups"],
     settings: ["Settings", "Personalise your dashboard and preferences"]
 };
@@ -512,6 +513,7 @@ function switchView(name, opts) {
     else if (name === "products") loadProducts();
     else if (name === "invoices") loadInvoices();
     else if (name === "dayreport") renderZReportTab(document.getElementById("view-dayreport"));
+    else if (name === "customers") renderCustomers();
     else if (name === "admin") renderAdminTab(currentAdminTab);
     else if (name === "settings") renderSettings();
 }
@@ -1115,7 +1117,8 @@ function renderBilling() {
                     <div class="cart-lines" id="cartLines"></div>
                     <div id="cartForm">
                         <div class="field"><label for="custName">Customer Name</label>
-                            <input class="input" id="custName" placeholder="Walk-in Customer"></div>
+                            <input class="input" id="custName" placeholder="Walk-in Customer" autocomplete="off">
+                            <div class="autocomplete-panel hidden" id="custSuggestions"></div></div>
                         <div class="field-row">
                             <div class="field"><label for="custPhone">Phone</label><input class="input" id="custPhone" placeholder="Optional"></div>
                             <div class="field"><label for="payMode">Payment</label>
@@ -1172,6 +1175,42 @@ function renderBilling() {
         if (e.key === "Enter") { e.preventDefault(); handleBarcodeScan(); }
     });
     barcodeInput.focus();
+
+    // Phone / name type-ahead: as the cashier types into either field, suggest matching
+    // returning customers so they can be recalled in one click. Populates both fields when a
+    // suggestion is picked. Debounced so we don't spam the endpoint per keystroke.
+    const phoneField = document.getElementById("custPhone");
+    const nameField = document.getElementById("custName");
+    const suggestions = document.getElementById("custSuggestions");
+    const closeSuggestions = () => suggestions.classList.add("hidden");
+    const openSuggestions = async (q) => {
+        if (!q || q.length < 2) { closeSuggestions(); return; }
+        try {
+            const rows = await api.get("/api/customers" + buildQuery({
+                branchId: session.role === "ADMIN" ? currentBranchId : null,
+                q
+            }));
+            if (!rows.length) { closeSuggestions(); return; }
+            suggestions.innerHTML = rows.slice(0, 6).map((c, i) => `
+                <div class="ac-row" data-i="${i}">
+                    <div class="ac-main">${esc(c.name || "(no name)")}</div>
+                    <div class="ac-sub">${esc(c.phone || "no phone")} · ${c.invoiceCount} bill(s) · last ${esc(c.lastVisit || "?")}</div>
+                </div>`).join("");
+            suggestions.classList.remove("hidden");
+            suggestions.querySelectorAll(".ac-row").forEach(row => row.onclick = () => {
+                const chosen = rows[+row.dataset.i];
+                phoneField.value = chosen.phone || "";
+                nameField.value = chosen.name || "";
+                closeSuggestions();
+            });
+        } catch (e) { closeSuggestions(); }
+    };
+    const acLookup = debounced(() => openSuggestions((phoneField.value + " " + nameField.value).trim()), 180);
+    phoneField.addEventListener("input", acLookup);
+    nameField.addEventListener("input", acLookup);
+    // Close the panel when focus leaves the customer inputs (via a slight delay so a click
+    // on a suggestion registers before we hide it).
+    [phoneField, nameField].forEach(f => f.addEventListener("blur", () => setTimeout(closeSuggestions, 150)));
 
     renderProductGrid("");
     renderCart();
@@ -2151,6 +2190,97 @@ function renderZReport(root, z) {
                 </tbody>
             </table>
         </div>`;
+}
+
+/* ============================================================
+   CUSTOMERS (derived from invoices)
+   ============================================================ */
+async function renderCustomers() {
+    const view = document.getElementById("view-customers");
+    view.innerHTML = `
+        <div class="toolbar">
+            <input class="input search" id="custSearchInp" placeholder="Search by phone or name…">
+            <div class="spacer"></div>
+            <span class="mini-sub" id="custCount"></span>
+        </div>
+        <div class="card"><div class="table-wrap"><table class="tbl">
+            <thead><tr><th>Name</th><th>Phone</th>
+                <th class="num">Bills</th><th class="num">Total Spent</th>
+                <th>Last Visit</th><th></th></tr></thead>
+            <tbody id="custBody"><tr><td colspan="6"><div class="empty-state">Loading…</div></td></tr></tbody>
+        </table></div></div>`;
+    const search = document.getElementById("custSearchInp");
+    const body = document.getElementById("custBody");
+    const countEl = document.getElementById("custCount");
+    const load = async () => {
+        try {
+            const rows = await api.get("/api/customers" + buildQuery({
+                branchId: session.role === "ADMIN" ? (currentBranchId || "all") : null,
+                q: search.value.trim()
+            }));
+            countEl.textContent = rows.length + " customer(s)";
+            if (!rows.length) {
+                body.innerHTML = `<tr><td colspan="6"><div class="empty-state"><div class="big">👥</div>No customers yet. Any bill with a name or phone shows up here.</div></td></tr>`;
+                return;
+            }
+            body.innerHTML = rows.map(c => `
+                <tr>
+                    <td><b>${esc(c.name || "(no name)")}</b></td>
+                    <td>${esc(c.phone || "—")}</td>
+                    <td class="num">${c.invoiceCount}</td>
+                    <td class="num money">${money(c.totalSpent)}</td>
+                    <td>${esc(c.lastVisit || "—")}</td>
+                    <td class="num"><button class="btn btn-sm" data-hist='${esc(JSON.stringify({phone:c.phone, name:c.name}))}'>History</button></td>
+                </tr>`).join("");
+            body.querySelectorAll("button[data-hist]").forEach(b =>
+                b.onclick = () => openCustomerHistory(JSON.parse(b.dataset.hist)));
+        } catch (e) {
+            body.innerHTML = `<tr><td colspan="6"><div class="empty-state">Could not load customers.</div></td></tr>`;
+        }
+    };
+    search.addEventListener("input", debounced(load, 180));
+    search.focus();
+    load();
+}
+
+async function openCustomerHistory(cust) {
+    const q = buildQuery({
+        branchId: session.role === "ADMIN" ? (currentBranchId || "all") : null,
+        phone: cust.phone || "",
+        name: cust.phone ? "" : (cust.name || "")
+    });
+    openModal(`
+        <div class="modal" style="max-width:640px">
+            <div class="modal-head"><h3>${esc(cust.name || cust.phone || "Customer")}</h3>
+                <button class="modal-close" id="mClose">×</button></div>
+            <div class="modal-body">
+                <div class="mini-sub" style="margin:0 0 12px">${esc(cust.phone || "no phone")}</div>
+                <div id="custHistBody"><div class="empty-state">Loading…</div></div>
+            </div>
+            <div class="modal-foot"><button class="btn" id="mCancel">Close</button></div>
+        </div>`);
+    document.getElementById("mClose").onclick = closeModal;
+    document.getElementById("mCancel").onclick = closeModal;
+    try {
+        const rows = await api.get("/api/customers/history" + q);
+        const total = rows.reduce((s, r) => s + Number(r.grandTotal || 0), 0);
+        document.getElementById("custHistBody").innerHTML = `
+            <div class="mini-sub" style="margin-bottom:8px">${rows.length} bill(s) · <b>${money(total)}</b> lifetime</div>
+            <div class="table-wrap"><table class="tbl">
+                <thead><tr><th>Invoice</th><th>Date</th><th>Payment</th><th class="num">Items</th><th class="num">Total</th><th></th></tr></thead>
+                <tbody>${rows.map(r => `
+                    <tr><td><b>${esc(r.invoiceNo)}</b></td><td>${esc(r.dateTime)}</td>
+                        <td>${esc(r.paymentMode)}</td><td class="num">${r.itemCount}</td>
+                        <td class="num money">${money(r.grandTotal)}</td>
+                        <td class="num"><button class="btn btn-sm" data-pdf="${esc(r.pdfUrl)}">📄</button></td></tr>`).join("")}
+                </tbody>
+            </table></div>`;
+        document.querySelectorAll("#custHistBody button[data-pdf]").forEach(b =>
+            b.onclick = () => window.open(b.dataset.pdf, "_blank"));
+    } catch (e) {
+        document.getElementById("custHistBody").innerHTML =
+            `<div class="empty-state">${esc(e.message)}</div>`;
+    }
 }
 
 function renderBackupTab(body) {

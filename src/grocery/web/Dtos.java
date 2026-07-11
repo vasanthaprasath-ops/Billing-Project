@@ -253,6 +253,20 @@ public final class Dtos {
         public boolean mustChangePassword;
     }
 
+    /**
+     * A summary row for the (derived) Customers view - one entry per distinct phone number
+     * (or, when phone is blank, per distinct name). Aggregates the store's invoices in-memory,
+     * so no schema change is needed.
+     */
+    public static class CustomerSummaryDto {
+        public String phone;
+        public String name;
+        public int invoiceCount;
+        public double totalSpent;
+        public String lastVisit;   // formatted like DATE_FMT
+        public String lastInvoiceNo;
+    }
+
     public static class RefundLineDto {
         public String itemId;
         public String name;

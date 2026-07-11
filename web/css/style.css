@@ -578,6 +578,20 @@ tr.tbl-group-row td {
 .tender-chips .chip-clear { color: var(--muted); margin-left: auto; }
 .tender-chips .chip-clear:hover { border-color: var(--muted-2); color: var(--ink); }
 
+/* Customer type-ahead panel under the phone/name inputs on the billing screen */
+.autocomplete-panel {
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: var(--shadow); margin-top: 4px; max-height: 220px; overflow-y: auto;
+    z-index: 5; position: relative;
+}
+.autocomplete-panel .ac-row {
+    padding: 8px 12px; cursor: pointer; border-bottom: 1px solid var(--border);
+}
+.autocomplete-panel .ac-row:last-child { border-bottom: 0; }
+.autocomplete-panel .ac-row:hover { background: var(--bg); }
+.autocomplete-panel .ac-main { font-weight: 600; font-size: 13px; }
+.autocomplete-panel .ac-sub { font-size: 11.5px; color: var(--muted); }
+
 .totals { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 8px; }
 .total-row { display: flex; justify-content: space-between; font-size: 13.5px; padding: 3px 0; color: var(--muted); }
 .total-row span:last-child { color: var(--ink); font-variant-numeric: tabular-nums; }
