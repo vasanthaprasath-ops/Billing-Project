@@ -531,9 +531,19 @@ tr.tbl-group-row td {
 }
 
 /* cart */
-.cart { position: sticky; top: 0; display: flex; flex-direction: column; max-height: calc(100vh - 132px); }
-.cart .card-body { display: flex; flex-direction: column; min-height: 0; flex: 1; }
-.cart-lines { flex: 1; overflow-y: auto; margin: 0 -6px; padding: 0 6px; }
+/* "Sticky footer button" layout: card-body is a column of exactly two things -
+   .cart-scroll (everything that can grow: line items, the customer/payment form, totals)
+   and the checkout button. Only .cart-scroll flexes/scrolls; the button has flex-shrink:0
+   and sits after it, so no matter how tall the form gets (place-of-supply, tender chips,
+   etc.) the button is ALWAYS fully visible - worst case the user scrolls the middle
+   section to see every field, but the primary action is never pushed off-screen. Pinning
+   the form+totals+button together as one non-shrinking block (an earlier attempt) doesn't
+   work in general: a tall form on a short viewport has nothing left to give and overflows
+   regardless of whether the ancestor uses max-height or a definite height. */
+.cart { position: sticky; top: 0; display: flex; flex-direction: column; height: calc(100vh - 132px); overflow: hidden; }
+.cart .card-body { display: flex; flex-direction: column; min-height: 0; flex: 1; overflow: hidden; }
+.cart-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; margin: 0 -6px; padding: 0 6px; }
+.cart #checkoutBtn { flex-shrink: 0; margin-top: 14px; }
 .cart-empty { text-align: center; color: var(--muted-2); padding: 40px 10px; font-size: 13px; }
 .cart-empty .big { font-size: 34px; margin-bottom: 8px; }
 
@@ -874,7 +884,8 @@ tr.tbl-group-row td {
     .dash-grid, .dash-grid.dash-grid-3 { grid-template-columns: 1fr; }
     .dash-grid.dash-grid-3 > *:nth-child(3) { grid-column: auto; }
     .pos { grid-template-columns: 1fr; height: auto; }
-    .cart { position: static; max-height: none; }
+    .cart { position: static; height: auto; overflow: visible; }
+    .cart .card-body, .cart-scroll { overflow: visible; }
 }
 @media (max-width: 720px) {
     .app { flex-direction: column; height: auto; min-height: 100vh; }

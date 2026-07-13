@@ -13,7 +13,19 @@ let currentView = "dashboard";
 let currentAdminTab = "branches";
 let invoicesSubTab = "sales"; // "sales" or "returns"
 let productsLowStockOnly = false; // true only when Products was opened via a "Low Stock" shortcut
-let invoicesPage = { offset: 0, limit: 50 };  // client-side paging state for the invoices/returns tables
+const PAGE_SIZE_CHOICES = [10, 20, 50, 100];
+/** Client-side paging state for every paginated list. limit is initialised from the user's
+ *  Settings default at boot (see applyPageSizePreference); each list keeps its own offset. */
+let invoicesPage = { offset: 0, limit: 20 };
+let productsPage = { offset: 0, limit: 20 };
+let customersPage = { offset: 0, limit: 20 };
+let auditPage = { offset: 0, limit: 20 };
+const ALL_PAGE_STATES = [invoicesPage, productsPage, customersPage, auditPage];
+function applyPageSizePreference() {
+    const s = loadUserSettings();
+    const size = PAGE_SIZE_CHOICES.includes(s.pageSize) ? s.pageSize : 20;
+    ALL_PAGE_STATES.forEach(p => { p.limit = size; p.offset = 0; });
+}
 
 /* ---------------- API client ---------------- */
 const api = {
@@ -511,7 +523,7 @@ function switchView(name, opts) {
 
     if (name === "dashboard") loadDashboard();
     else if (name === "billing") renderBilling();
-    else if (name === "products") loadProducts();
+    else if (name === "products") { productsPage.offset = 0; loadProducts(); }
     else if (name === "invoices") { invoicesPage.offset = 0; loadInvoices(); }
     else if (name === "dayreport") renderZReportTab(document.getElementById("view-dayreport"));
     else if (name === "customers") renderCustomers();
@@ -556,7 +568,8 @@ function loadUserSettings() {
         order,
         theme: s.theme || "auto",                        // "auto" | "light" | "dark"
         defaultPeriod: s.defaultPeriod || null,          // "today" | "week" | "month" | "all"
-        defaultView: s.defaultView || "dashboard"
+        defaultView: s.defaultView || "dashboard",
+        pageSize: Number.isFinite(s.pageSize) ? s.pageSize : 20  // 10 | 20 | 50 | 100
     };
 }
 
@@ -567,7 +580,8 @@ function saveUserSettings(patch) {
         order: patch.order || cur.order,
         theme: patch.theme || cur.theme,
         defaultPeriod: patch.defaultPeriod === undefined ? cur.defaultPeriod : patch.defaultPeriod,
-        defaultView: patch.defaultView || cur.defaultView
+        defaultView: patch.defaultView || cur.defaultView,
+        pageSize: patch.pageSize === undefined ? cur.pageSize : patch.pageSize
     };
     localStorage.setItem(settingsKey(), JSON.stringify(next));
 }
@@ -904,6 +918,10 @@ function renderSettings() {
                     <select class="input" id="setLanding">
                         ${defaultViewOptions(s.defaultView)}
                     </select></div>
+                <div class="field" style="max-width:280px"><label for="setPageSize">Default items per page</label>
+                    <select class="input" id="setPageSize">
+                        ${PAGE_SIZE_CHOICES.map(sz => `<option value="${sz}" ${s.pageSize === sz ? "selected" : ""}>${sz}</option>`).join("")}
+                    </select></div>
             </div>
         </div>`;
 
@@ -925,6 +943,12 @@ function renderSettings() {
     document.getElementById("setLanding").onchange = e => {
         saveUserSettings({ defaultView: e.target.value });
         toast("Default landing view saved", "success");
+    };
+    document.getElementById("setPageSize").onchange = e => {
+        const size = Number(e.target.value);
+        ALL_PAGE_STATES.forEach(p => { p.limit = size; p.offset = 0; });
+        saveUserSettings({ pageSize: size });
+        toast("Default page size saved", "success");
     };
 }
 
@@ -1109,33 +1133,35 @@ function renderBilling() {
                     <button class="btn btn-ghost btn-sm" id="clearCartBtn">Clear</button>
                 </div>
                 <div class="card-body">
-                    <div class="cart-lines" id="cartLines"></div>
-                    <div id="cartForm">
-                        <div class="field"><label for="custName">Customer Name</label>
-                            <input class="input" id="custName" placeholder="Walk-in Customer" autocomplete="off">
-                            <div class="autocomplete-panel hidden" id="custSuggestions"></div></div>
-                        <div class="field-row">
-                            <div class="field"><label for="custPhone">Phone</label><input class="input" id="custPhone" placeholder="Optional"></div>
-                            <div class="field"><label for="payMode">Payment</label>
-                                <select class="input" id="payMode"><option>Cash</option><option>Card</option><option>UPI</option></select></div>
+                    <div class="cart-scroll">
+                        <div class="cart-lines" id="cartLines"></div>
+                        <div id="cartForm">
+                            <div class="field"><label for="custName">Customer Name</label>
+                                <input class="input" id="custName" placeholder="Walk-in Customer" autocomplete="off">
+                                <div class="autocomplete-panel hidden" id="custSuggestions"></div></div>
+                            <div class="field-row">
+                                <div class="field"><label for="custPhone">Phone</label><input class="input" id="custPhone" placeholder="Optional"></div>
+                                <div class="field"><label for="payMode">Payment</label>
+                                    <select class="input" id="payMode"><option>Cash</option><option>Card</option><option>UPI</option></select></div>
+                            </div>
+                            <div class="field"><label for="posState">Place of Supply <span class="mini-sub">— buyer's state (leave blank for local sale)</span></label>
+                                <input class="input" id="posState" maxlength="4" style="text-transform:uppercase" placeholder="e.g. TN, KA (for IGST)"></div>
+                            <div class="field"><label for="discount">Discount (${esc(store.currency)})</label>
+                                <input class="input" id="discount" type="number" min="0" step="0.01" value="0"></div>
+                            <div class="field" id="cashPaidField"><label for="cashPaid">Cash Tendered (${esc(store.currency)})</label>
+                                <input class="input" id="cashPaid" type="number" min="0" step="0.01" placeholder="Amount handed over by customer">
+                                <div class="tender-chips" id="tenderChips">
+                                    <button type="button" class="chip" data-tender="exact">Exact</button>
+                                    <button type="button" class="chip" data-tender="100">+100</button>
+                                    <button type="button" class="chip" data-tender="200">+200</button>
+                                    <button type="button" class="chip" data-tender="500">+500</button>
+                                    <button type="button" class="chip" data-tender="2000">+2000</button>
+                                    <button type="button" class="chip chip-clear" data-tender="clear">Clear</button>
+                                </div></div>
                         </div>
-                        <div class="field"><label for="posState">Place of Supply <span class="mini-sub">— buyer's state (leave blank for local sale)</span></label>
-                            <input class="input" id="posState" maxlength="4" style="text-transform:uppercase" placeholder="e.g. TN, KA (for IGST)"></div>
-                        <div class="field"><label for="discount">Discount (${esc(store.currency)})</label>
-                            <input class="input" id="discount" type="number" min="0" step="0.01" value="0"></div>
-                        <div class="field" id="cashPaidField"><label for="cashPaid">Cash Tendered (${esc(store.currency)})</label>
-                            <input class="input" id="cashPaid" type="number" min="0" step="0.01" placeholder="Amount handed over by customer">
-                            <div class="tender-chips" id="tenderChips">
-                                <button type="button" class="chip" data-tender="exact">Exact</button>
-                                <button type="button" class="chip" data-tender="100">+100</button>
-                                <button type="button" class="chip" data-tender="200">+200</button>
-                                <button type="button" class="chip" data-tender="500">+500</button>
-                                <button type="button" class="chip" data-tender="2000">+2000</button>
-                                <button type="button" class="chip chip-clear" data-tender="clear">Clear</button>
-                            </div></div>
+                        <div class="totals" id="cartTotals"></div>
                     </div>
-                    <div class="totals" id="cartTotals"></div>
-                    <button class="btn btn-primary btn-block btn-lg" id="checkoutBtn" style="margin-top:14px">Checkout &amp; Print Invoice</button>
+                    <button class="btn btn-primary btn-block btn-lg" id="checkoutBtn">Checkout &amp; Print Invoice</button>
                 </div>
             </div>
         </div>`;
@@ -1469,16 +1495,25 @@ function renderProducts(filter) {
     const canEdit = session.role !== "CASHIER";
     const colCount = canEdit ? 9 : 8;
 
-    // Group by category (aisle), categories A-Z, items A-Z within each - easier to
-    // scan a big catalogue than one flat list, and mirrors how a store is laid out.
+    // Sort by category then name (aisle-order), then slice the current page out of the flat
+    // sorted list, and re-group the SLICE by category for display. The pagination bar and
+    // "N products" count still reflect the full filtered set, so paging math is honest even
+    // though the view keeps its aisle-style grouping.
+    const sorted = list.slice().sort((a, b) => {
+        const c = (a.category || "General").localeCompare(b.category || "General");
+        return c !== 0 ? c : a.name.localeCompare(b.name);
+    });
+    const totalCount = sorted.length;
+    // Clamp offset in case a filter change or page-size shrink invalidated it.
+    if (productsPage.offset >= totalCount) productsPage.offset = 0;
+    const pageSlice = sorted.slice(productsPage.offset, productsPage.offset + productsPage.limit);
     const byCategory = new Map();
-    list.forEach(it => {
+    pageSlice.forEach(it => {
         const cat = it.category || "General";
         if (!byCategory.has(cat)) byCategory.set(cat, []);
         byCategory.get(cat).push(it);
     });
-    const categories = Array.from(byCategory.keys()).sort((a, b) => a.localeCompare(b));
-    categories.forEach(cat => byCategory.get(cat).sort((a, b) => a.name.localeCompare(b.name)));
+    const categories = Array.from(byCategory.keys());
 
     const view = document.getElementById("view-products");
     view.innerHTML = `
@@ -1487,13 +1522,13 @@ function renderProducts(filter) {
             <label class="check-inline" title="Show only items at or below their reorder level">
                 <input type="checkbox" id="lowStockToggle" ${productsLowStockOnly ? "checked" : ""}> Show low stock(s)</label>
             <div class="spacer"></div>
-            <span class="mini-sub">${list.length} product(s) in ${categories.length} categor${categories.length === 1 ? "y" : "ies"}</span>
+            <span class="mini-sub">${totalCount} product(s)${totalCount > pageSlice.length ? ` (showing ${pageSlice.length})` : ""}</span>
             ${canEdit ? `<button class="btn btn-primary" id="addProdBtn">＋ Add Product</button>` : ""}
         </div>
         <div class="card"><div class="table-wrap"><table class="tbl">
             <thead><tr><th>ID</th><th>Barcode</th><th>Name</th><th>Unit</th>
                 <th class="num">Price</th><th class="num">GST %</th><th class="num">Stock</th><th class="num">Reorder At</th>${canEdit ? "<th></th>" : ""}</tr></thead>
-            <tbody>${list.length ? categories.map(cat => `
+            <tbody>${pageSlice.length ? categories.map(cat => `
                 <tr class="tbl-group-row"><td colspan="${colCount}">${esc(cat)}
                     <span class="tbl-group-count">${byCategory.get(cat).length}</span></td></tr>
                 ${byCategory.get(cat).map(it => `
@@ -1515,14 +1550,20 @@ function renderProducts(filter) {
                 : `<tr><td colspan="${colCount}"><div class="empty-state"><div class="big">📦</div>${
                     productsLowStockOnly ? "No low-stock items right now. 👍" : "No products found."}</div></td></tr>`}
             </tbody>
-        </table></div></div>`;
+        </table></div>
+        ${paginationBar(productsPage, totalCount)}</div>`;
+    wirePaginationBar(view, productsPage, () => renderProducts(filter));
 
     const search = document.getElementById("prodSearch");
-    search.addEventListener("input", debounced(e => renderProducts(e.target.value), 120));
+    search.addEventListener("input", debounced(e => {
+        productsPage.offset = 0;   // new filter -> back to page 1
+        renderProducts(e.target.value);
+    }, 120));
     search.focus();
     search.setSelectionRange(search.value.length, search.value.length);
     document.getElementById("lowStockToggle").onchange = e => {
         productsLowStockOnly = e.target.checked;
+        productsPage.offset = 0;
         renderProducts(search.value);
     };
     if (canEdit) {
@@ -1703,11 +1744,11 @@ function renderInvoices(all, filter, totalCount) {
                 </tr>`).join("") : `<tr><td colspan="${showBranch ? 8 : 7}"><div class="empty-state"><div class="big">📁</div>No invoices yet. Create a bill to get started.</div></td></tr>`}
             </tbody>
         </table></div>
-        ${paginationBar(total)}</div>`;
+        ${paginationBar(invoicesPage, total)}</div>`;
 
     wireInvoicesSubTabs();
     wirePeriodControl(view, loadInvoices);
-    wirePaginationBar(view);
+    wirePaginationBar(view, invoicesPage, loadInvoices);
     const s = document.getElementById("invSearch");
     s.addEventListener("input", debounced(e => renderInvoices(all, e.target.value, total), 120));
     s.focus();
@@ -1769,36 +1810,51 @@ function renderRefundsList(refunds, totalCount) {
                 </tr>`).join("") : `<tr><td colspan="${showBranch ? 8 : 7}"><div class="empty-state"><div class="big">↩</div>No refunds yet.</div></td></tr>`}
             </tbody>
         </table></div>
-        ${paginationBar(total)}</div>`;
+        ${paginationBar(invoicesPage, total)}</div>`;
     wireInvoicesSubTabs();
     wirePeriodControl(view, loadInvoices);
-    wirePaginationBar(view);
+    wirePaginationBar(view, invoicesPage, loadInvoices);
 }
 
-/** Prev/Next pagination footer using the shared invoicesPage state.
- *  Hidden entirely when the whole list fits in one page (total <= limit). */
-function paginationBar(total) {
-    if (total <= invoicesPage.limit) return "";
-    const start = invoicesPage.offset + 1;
-    const end = Math.min(invoicesPage.offset + invoicesPage.limit, total);
-    const canPrev = invoicesPage.offset > 0;
+/** Reusable Prev/Next + page-size pagination footer. Every paginated list calls
+ *  paginationBar(state, total) inside its own render function, and wirePaginationBar(view,
+ *  state, reload) to attach handlers. The page-size dropdown offers 10/20/50/100 and, when
+ *  changed, also updates the user's saved default so the next login remembers it. */
+function paginationBar(state, total) {
+    const start = total === 0 ? 0 : state.offset + 1;
+    const end = Math.min(state.offset + state.limit, total);
+    const canPrev = state.offset > 0;
     const canNext = end < total;
+    const sizeOpts = PAGE_SIZE_CHOICES.map(s =>
+        `<option value="${s}" ${s === state.limit ? "selected" : ""}>${s}</option>`).join("");
     return `<div class="pagination-bar">
+        <label class="mini-sub" style="display:inline-flex;gap:6px;align-items:center">
+            Show <select class="input" data-page-size style="width:auto;padding:4px 8px">${sizeOpts}</select> per page
+        </label>
         <span class="mini-sub">Showing ${start}–${end} of ${total}</span>
         <div class="spacer"></div>
         <button class="btn btn-sm" data-page="prev" ${canPrev ? "" : "disabled"}>← Prev</button>
         <button class="btn btn-sm" data-page="next" ${canNext ? "" : "disabled"}>Next →</button>
     </div>`;
 }
-function wirePaginationBar(view) {
+function wirePaginationBar(view, state, reload) {
     view.querySelectorAll("[data-page]").forEach(b => b.onclick = () => {
         if (b.dataset.page === "prev") {
-            invoicesPage.offset = Math.max(0, invoicesPage.offset - invoicesPage.limit);
+            state.offset = Math.max(0, state.offset - state.limit);
         } else {
-            invoicesPage.offset += invoicesPage.limit;
+            state.offset += state.limit;
         }
-        loadInvoices();
+        reload();
     });
+    const sel = view.querySelector("[data-page-size]");
+    if (sel) sel.onchange = () => {
+        const size = Number(sel.value);
+        // Applying to every list keeps behaviour consistent - the user set "show 50" once
+        // and expects to see 50 rows in Products, Invoices, Customers, and Audit alike.
+        ALL_PAGE_STATES.forEach(p => { p.limit = size; p.offset = 0; });
+        saveUserSettings({ pageSize: size });
+        reload();
+    };
 }
 
 async function openReturnModal(invoiceNo) {
@@ -2071,13 +2127,21 @@ function openUserModal(user) {
 }
 
 async function renderAuditTab(body) {
-    body.innerHTML = `<div class="empty-state">Loading…</div>`;
-    let list;
-    try { list = await api.get("/api/audit-log"); } catch (e) { body.innerHTML = `<div class="empty-state">Could not load audit log.</div>`; return; }
+    auditPage.offset = 0;
     body.innerHTML = `
         <div class="card"><div class="table-wrap"><table class="tbl">
             <thead><tr><th>When</th><th>User</th><th>Role</th><th>Branch</th><th>Action</th><th>Details</th></tr></thead>
-            <tbody>${list.length ? list.map(e => `
+            <tbody id="auditBody"><tr><td colspan="6"><div class="empty-state">Loading…</div></td></tr></tbody>
+        </table></div>
+        <div id="auditPagBar"></div></div>`;
+    const load = async () => {
+        try {
+            const page = await api.get("/api/audit-log" + buildQuery({
+                limit: auditPage.limit, offset: auditPage.offset
+            }));
+            const rows = page.items;
+            const total = page.total;
+            document.getElementById("auditBody").innerHTML = rows.length ? rows.map(e => `
                 <tr>
                     <td>${esc(e.when)}</td>
                     <td>${esc(e.username)}</td>
@@ -2085,9 +2149,15 @@ async function renderAuditTab(body) {
                     <td>${esc(branchNameOf(e.branchId))}</td>
                     <td>${esc(e.action)}</td>
                     <td>${esc(e.details)}</td>
-                </tr>`).join("") : `<tr><td colspan="6"><div class="empty-state">No activity recorded yet.</div></td></tr>`}
-            </tbody>
-        </table></div></div>`;
+                </tr>`).join("") : `<tr><td colspan="6"><div class="empty-state">No activity recorded yet.</div></td></tr>`;
+            const barSlot = document.getElementById("auditPagBar");
+            barSlot.innerHTML = paginationBar(auditPage, total);
+            wirePaginationBar(barSlot, auditPage, load);
+        } catch (e) {
+            body.innerHTML = `<div class="empty-state">Could not load audit log.</div>`;
+        }
+    };
+    load();
 }
 function branchNameOf(id) {
     if (!id) return "—";
@@ -2227,6 +2297,7 @@ function renderZReport(root, z) {
    ============================================================ */
 async function renderCustomers() {
     const view = document.getElementById("view-customers");
+    // Initial shell - the table body and pagination bar re-render inside on every load().
     view.innerHTML = `
         <div class="toolbar">
             <input class="input search" id="custSearchInp" placeholder="Search by phone or name…">
@@ -2238,19 +2309,26 @@ async function renderCustomers() {
                 <th class="num">Bills</th><th class="num">Total Spent</th>
                 <th>Last Visit</th><th></th></tr></thead>
             <tbody id="custBody"><tr><td colspan="6"><div class="empty-state">Loading…</div></td></tr></tbody>
-        </table></div></div>`;
+        </table></div>
+        <div id="custPagBar"></div></div>`;
     const search = document.getElementById("custSearchInp");
     const body = document.getElementById("custBody");
     const countEl = document.getElementById("custCount");
+    const barSlot = document.getElementById("custPagBar");
     const load = async () => {
         try {
-            const rows = await api.get("/api/customers" + buildQuery({
+            const page = await api.get("/api/customers" + buildQuery({
                 branchId: session.role === "ADMIN" ? (currentBranchId || "all") : null,
-                q: search.value.trim()
+                q: search.value.trim(),
+                limit: customersPage.limit,
+                offset: customersPage.offset
             }));
-            countEl.textContent = rows.length + " customer(s)";
+            const rows = page.items;
+            const total = page.total;
+            countEl.textContent = total + " customer(s)" + (total > rows.length ? ` (showing ${rows.length})` : "");
             if (!rows.length) {
                 body.innerHTML = `<tr><td colspan="6"><div class="empty-state"><div class="big">👥</div>No customers yet. Any bill with a name or phone shows up here.</div></td></tr>`;
+                barSlot.innerHTML = "";
                 return;
             }
             body.innerHTML = rows.map(c => `
@@ -2264,12 +2342,16 @@ async function renderCustomers() {
                 </tr>`).join("");
             body.querySelectorAll("button[data-hist]").forEach(b =>
                 b.onclick = () => openCustomerHistory(JSON.parse(b.dataset.hist)));
+            barSlot.innerHTML = paginationBar(customersPage, total);
+            wirePaginationBar(barSlot, customersPage, load);
         } catch (e) {
             body.innerHTML = `<tr><td colspan="6"><div class="empty-state">Could not load customers.</div></td></tr>`;
+            barSlot.innerHTML = "";
         }
     };
-    search.addEventListener("input", debounced(load, 180));
+    search.addEventListener("input", debounced(() => { customersPage.offset = 0; load(); }, 180));
     search.focus();
+    customersPage.offset = 0;
     load();
 }
 
@@ -2424,6 +2506,7 @@ async function bootApp() {
     // Apply the user's saved theme immediately so we don't flash the wrong palette.
     // Their default reporting period (if set) also wins over whatever the previous session left in localStorage.
     applyThemePreference();
+    applyPageSizePreference();
     const userSettings = loadUserSettings();
     if (userSettings.defaultPeriod) {
         reportPeriod = userSettings.defaultPeriod;

@@ -356,15 +356,21 @@ public class ApiHandler implements HttpHandler {
 
     private void handleAuditLog(HttpExchange ex, User user) throws IOException {
         requireRole(user, Role.ADMIN);
-        String branchFilter = Http.queryParams(ex).get("branchId");
+        Map<String, String> q = Http.queryParams(ex);
+        String branchFilter = q.get("branchId");
         if (branchFilter != null && (branchFilter.isEmpty() || branchFilter.equalsIgnoreCase("all"))) {
             branchFilter = null;
         }
-        List<Dtos.AuditEntryDto> out = new ArrayList<>();
-        for (AuditEntry e : ctx.auditLog().recent(500, branchFilter)) {
-            out.add(Mappers.auditEntry(e));
+        List<AuditEntry> entries = ctx.auditLog().recent(500, branchFilter);
+        if (q.get("limit") == null || q.get("limit").isEmpty()) {
+            List<Dtos.AuditEntryDto> out = new ArrayList<>(entries.size());
+            for (AuditEntry e : entries) {
+                out.add(Mappers.auditEntry(e));
+            }
+            Http.sendJson(ex, 200, out);
+            return;
         }
-        Http.sendJson(ex, 200, out);
+        Http.sendJson(ex, 200, paginate(entries, q, Mappers::auditEntry));
     }
 
     private void handleBackup(HttpExchange ex, User user) throws IOException {
@@ -396,10 +402,11 @@ public class ApiHandler implements HttpHandler {
     private void handleListItems(HttpExchange ex, User user) throws IOException {
         String branchId = resolveBranchId(ex, user);
         Map<String, String> q = Http.queryParams(ex);
-        List<Dtos.ItemDto> out = new ArrayList<>();
         String barcode = q.get("barcode");
+        // Barcode lookup returns at most one hit and never paginates - the caller is the
+        // POS scanner, which wants the raw array either way.
         if (barcode != null && !barcode.isEmpty()) {
-            // A scan matches the barcode field; typing a known item id (SKU) works too.
+            List<Dtos.ItemDto> out = new ArrayList<>();
             Item hit = ctx.inventory().findByBarcode(branchId, barcode);
             if (hit == null) {
                 hit = ctx.inventory().findInBranch(branchId, barcode);
@@ -407,12 +414,21 @@ public class ApiHandler implements HttpHandler {
             if (hit != null) {
                 out.add(Mappers.item(hit));
             }
-        } else {
-            for (Item it : ctx.inventory().search(branchId, q.get("q"))) {
+            Http.sendJson(ex, 200, out);
+            return;
+        }
+        List<Item> matches = ctx.inventory().search(branchId, q.get("q"));
+        // Optional pagination (same shape as /invoices, /refunds): missing ?limit still
+        // returns a bare array so callers that don't know about paging keep working.
+        if (q.get("limit") == null || q.get("limit").isEmpty()) {
+            List<Dtos.ItemDto> out = new ArrayList<>(matches.size());
+            for (Item it : matches) {
                 out.add(Mappers.item(it));
             }
+            Http.sendJson(ex, 200, out);
+            return;
         }
-        Http.sendJson(ex, 200, out);
+        Http.sendJson(ex, 200, paginate(matches, q, Mappers::item));
     }
 
     private void handleAddItem(HttpExchange ex, User user) throws IOException {
@@ -808,7 +824,8 @@ public class ApiHandler implements HttpHandler {
     private void handleListCustomers(HttpExchange ex, User user) throws IOException {
         String branchId = resolveBranchIdOrAll(ex, user);
         List<Invoice> list = branchId == null ? ctx.invoiceStore().getAll() : ctx.invoiceStore().getAllForBranch(branchId);
-        String q = Http.queryParams(ex).getOrDefault("q", "").trim().toLowerCase();
+        Map<String, String> params = Http.queryParams(ex);
+        String q = params.getOrDefault("q", "").trim().toLowerCase();
 
         // Aggregate by phone-or-name key. LinkedHashMap keeps first-seen insertion order until we sort.
         Map<String, Dtos.CustomerSummaryDto> agg = new LinkedHashMap<>();
@@ -842,15 +859,19 @@ public class ApiHandler implements HttpHandler {
         }
         // Newest first - the just-served customer needs to be findable immediately.
         out.sort((a, b) -> b.lastVisit == null ? -1 : a.lastVisit == null ? 1 : b.lastVisit.compareTo(a.lastVisit));
-        // Cap at 200: the checkout type-ahead only wants the top few, and the Customers view
-        // paginates client-side. A shop's whole customer list won't blow this up for a while.
-        if (out.size() > 200) {
-            out = out.subList(0, 200);
-        }
         for (Dtos.CustomerSummaryDto c : out) {
             c.totalSpent = round2(c.totalSpent);
         }
-        Http.sendJson(ex, 200, out);
+        // Backwards-compat: no ?limit -> bare array capped at 200 (old behaviour, which is what
+        // the checkout type-ahead relies on). ?limit -> full paged envelope over the entire set.
+        if (params.get("limit") == null || params.get("limit").isEmpty()) {
+            if (out.size() > 200) {
+                out = out.subList(0, 200);
+            }
+            Http.sendJson(ex, 200, out);
+            return;
+        }
+        Http.sendJson(ex, 200, paginate(out, params, x -> x));
     }
 
     /** Every invoice matching a phone (or, if phone is blank, an exact name). Branch-scoped. */
