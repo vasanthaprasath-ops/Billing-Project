@@ -275,6 +275,50 @@ from your existing `store.properties`.
 
 ---
 
+## 📱 Android app (standalone)
+
+The same app also runs as an **Android app that needs no PC**: everything — billing, stock,
+returns, reports, users, PDFs — runs on the phone, with the data stored on the phone. It is one
+shop per phone (no multiple branches). The PC version is unchanged and still works as before.
+
+**Get the app:** every push that touches `web/`, `src/` or `mobile/` builds it on GitHub.
+Open the repository's **Actions** tab → **Android app** → the latest run → download
+**FreshMart-Billing-apk**, unzip it, copy `app-debug.apk` to the phone and open it (Android asks
+you to allow installing apps from that source once).
+
+**First launch:** the app signs you in as `admin` and asks you to choose a password. Set your
+shop's name, address, GSTIN and state code under **Admin → Shop**; they print on every bill.
+
+**Printing:** **A4 Invoice**, **Thermal Receipt** and the other file buttons open Android's share
+sheet — print through your printer's app, or send the PDF on WhatsApp or by email.
+
+**Backups — important:** the data lives only on that phone. Save a backup regularly from
+**Admin → Backup** (send the zip to Google Drive, email or WhatsApp). Backups are the same format
+as the PC version's, so a PC backup restores onto a phone and a phone backup restores onto a PC.
+
+**How it works:** `mobile/` wraps the shared `web/` UI with [Capacitor](https://capacitorjs.com).
+`mobile/src/backend.js` is a JavaScript port of the Java server (same SQLite schema via sql.js,
+same API, same rounding), and `mobile/src/pdf.js` a port of the PDF engine. So **a billing-rule
+change must be made in both** the Java code and `mobile/src/`. `npm run test:diff` then runs the
+same ~150 requests against both and fails on any difference; CI runs it on every push.
+
+**Build it yourself** (Node 22, JDK 21, Android Studio with SDK 36):
+
+```bash
+cd mobile
+npm install
+npm run test:diff          # phone backend vs Java server
+npm run sync               # build mobile/www and copy it into the Android project
+cd android && ./gradlew assembleDebug    # -> app/build/outputs/apk/debug/app-debug.apk
+```
+
+The CI build is a **debug** APK — fine for installing directly on your phones. Publishing on the
+Play Store needs a release build signed with your own upload key (not set up here). The app id
+is `com.freshmart.billing` in `mobile/capacitor.config.json`; change it before the first Play
+Store release if you want a different one.
+
+---
+
 ## Project structure
 
 ```
@@ -315,6 +359,16 @@ src/grocery/
 
 web/                         The front-end (served at http://localhost:8080)
   index.html, css/style.css, js/app.js, favicon.svg
+
+mobile/                      The standalone Android app (see "Android app" above)
+  src/backend.js             On-device port of the Java server (sql.js SQLite, same /api)
+  src/pdf.js                 Port of the PDF engine (byte-identical invoices/receipts)
+  src/bridge.js              Routes the UI's /api calls to backend.js; share sheet; back button
+  src/zip.js                 Backup zip + store.properties read/write (PC-compatible)
+  src/mobile.css             Phone-only styles (system bar insets)
+  build.mjs                  Assembles mobile/www from web/ + src/ + sql.js + Capacitor core
+  test/diff-java.mjs         Runs the same requests against Java and backend.js, compares
+  android/                   Capacitor's Android Studio project
 
 lib/
   gson-2.11.0.jar            JSON (requests/responses)

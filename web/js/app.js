@@ -10,7 +10,10 @@ let currentBranchId = null; // ADMIN: selected branch, or null = "All Branches";
 let items = [];        // catalogue, refreshed from the server
 let cart = [];         // [{id,name,unit,price,taxRatePercent,stock,qty}]
 let currentView = "dashboard";
-let currentAdminTab = "branches";
+// True inside the Android app, where the "server" is the on-device backend (mobile/src/bridge.js):
+// one shop per phone, shop details edited in-app, backups shared from the phone.
+const LOCAL_MODE = !!window.FM_LOCAL;
+let currentAdminTab = LOCAL_MODE ? "shop" : "branches";
 let invoicesSubTab = "sales"; // "sales" or "returns"
 let productsLowStockOnly = false; // true only when Products was opened via a "Low Stock" shortcut
 const PAGE_SIZE_CHOICES = [10, 20, 50, 100];
@@ -178,7 +181,10 @@ function toast(msg, type = "info") {
  *  focused, and each field's message clears as soon as it is edited.
  *  errors: [[inputId, message], ...]. Returns true when there are none. */
 function showFieldErrors(errors) {
-    const root = document.getElementById("modalRoot");
+    return showFieldErrorsIn(document.getElementById("modalRoot"), errors);
+}
+
+function showFieldErrorsIn(root, errors) {
     root.querySelectorAll(".field-msg").forEach(m => m.remove());
     root.querySelectorAll(".input.invalid").forEach(i => {
         i.classList.remove("invalid");
@@ -447,7 +453,8 @@ function openChangePasswordModal(forced) {
                 ${forced ? "" : `<button class="modal-close" id="mClose">×</button>`}</div>
             <div class="modal-body">
                 ${forced
-                    ? `<p class="mini-sub" style="margin:0 0 14px">This is a new account — choose a password only you know.</p>`
+                    ? `<p class="mini-sub" style="margin:0 0 14px">This is a new account — choose a password only you know.
+                        You'll sign in as <b>${esc(session.username)}</b>.</p>`
                     : `<div class="field"><label for="cpCurrent">Current Password</label><input class="input" id="cpCurrent" type="password"></div>`}
                 <div class="field"><label for="cpNew">New Password</label>
                     <input class="input" id="cpNew" type="password" placeholder="At least 6 characters"></div>
@@ -2030,9 +2037,10 @@ async function openReturnModal(invoiceNo) {
    ============================================================ */
 // Day Report moved to its own top-level nav item (every role gets their own branch's
 // report, not just Admin) - these tabs are the genuinely admin-only management screens.
-const ADMIN_TABS = [["branches", "Branches"], ["users", "Users"], ["audit", "Audit Log"], ["backup", "Backup"]];
+const ADMIN_TABS = [[LOCAL_MODE ? "shop" : "branches", LOCAL_MODE ? "Shop" : "Branches"], ["users", "Users"], ["audit", "Audit Log"], ["backup", "Backup"]];
 
 function renderAdminTab(tab) {
+    if (LOCAL_MODE && tab === "branches") tab = "shop";
     currentAdminTab = tab;
     const view = document.getElementById("view-admin");
     view.innerHTML = `
@@ -2042,7 +2050,8 @@ function renderAdminTab(tab) {
         <div id="adminTabBody"></div>`;
     view.querySelectorAll(".admin-tab").forEach(b => b.onclick = () => renderAdminTab(b.dataset.tab));
     const body = document.getElementById("adminTabBody");
-    if (tab === "branches") renderBranchesTab(body);
+    if (tab === "shop") renderShopTab(body);
+    else if (tab === "branches") renderBranchesTab(body);
     else if (tab === "users") renderUsersTab(body);
     else if (tab === "audit") renderAuditTab(body);
     else if (tab === "backup") renderBackupTab(body);
@@ -2071,6 +2080,56 @@ async function renderBranchesTab(body) {
     document.getElementById("addBranchBtn").onclick = () => openBranchModal(null, list);
     body.querySelectorAll("button[data-edit]").forEach(btn =>
         btn.onclick = () => openBranchModal(list.find(x => x.id === btn.dataset.edit), list));
+}
+
+/** Phone only: the shop's name/address/GSTIN printed on every bill. On the PC these live in
+ *  data/store.properties; a phone has no file to edit, so they are saved through PUT /api/store. */
+async function renderShopTab(body) {
+    body.innerHTML = `<div class="empty-state">Loading…</div>`;
+    let info, list;
+    try { [info, list] = await Promise.all([api.get("/api/store"), api.get("/api/branches")]); }
+    catch (e) { body.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; return; }
+    const shop = list[0] || {};
+    const field = (id, label, value, hint) => `<div class="field"><label for="${id}">${label}${hint ? ` <span class="mini-sub">— ${hint}</span>` : ""}</label>
+        <input class="input" id="${id}" value="${esc(value || "")}"></div>`;
+    body.innerHTML = `
+        <div class="card settings-card">
+            <div class="card-head"><div class="card-title">Shop Details</div></div>
+            <div class="card-body">
+                <p class="mini-sub" style="margin:0 0 14px">Printed at the top of every invoice and receipt.</p>
+                ${field("shName", "Shop Name *", info.name)}
+                ${field("shAddr1", "Address Line 1", info.addressLine1)}
+                ${field("shAddr2", "Address Line 2", info.addressLine2)}
+                <div class="field-row">
+                    ${field("shPhone", "Phone", info.phone)}
+                    ${field("shEmail", "Email", info.email)}
+                </div>
+                <div class="field-row">
+                    ${field("shGstin", "GSTIN", info.gstin)}
+                    ${field("shState", "State Code", shop.stateCode, "for IGST on interstate bills")}
+                </div>
+                ${field("shCurrency", "Currency Label", info.currency, "e.g. Rs.")}
+                <button class="btn btn-primary" id="shSave">Save Shop Details</button>
+            </div>
+        </div>`;
+    document.getElementById("shState").classList.add("input-upper");
+    document.getElementById("shSave").onclick = () => withBusy(document.getElementById("shSave"), "Saving…", async () => {
+        const val = id => document.getElementById(id).value.trim();
+        const dto = {
+            name: val("shName"), addressLine1: val("shAddr1"), addressLine2: val("shAddr2"), phone: val("shPhone"),
+            email: val("shEmail"), gstin: val("shGstin"), stateCode: val("shState"), currency: val("shCurrency")
+        };
+        if (!showFieldErrorsIn(body, dto.name ? [] : [["shName", "Shop name is required"]])) return;
+        try {
+            store = await api.put("/api/store", dto);
+            branches = await api.get("/api/branches");
+            document.getElementById("brandName").textContent = (store.name || "FreshMart").split(" ")[0];
+            setupBranchSwitcher();
+            renderUserBox();
+            renderStoreFooter();
+            toast("Shop details saved", "success");
+        } catch (e) { toast(e.message, "error"); }
+    });
 }
 
 function openBranchModal(branch, allBranches) {
@@ -2491,18 +2550,26 @@ function renderBackupTab(body) {
         <div class="card settings-card">
             <div class="card-head"><div class="card-title">Data Backup</div></div>
             <div class="card-body">
-                <p class="mini-sub" style="margin:0 0 14px">Everything lives in a single SQLite file at <code>data/freshmart.db</code>.
+                ${LOCAL_MODE
+                    ? `<p class="mini-sub" style="margin:0 0 14px">All your bills, products and accounts are stored <b>only on this phone</b>.
+                        If the phone is lost, reset or the app is uninstalled, they are gone — so save a backup regularly
+                        (send it to Google Drive, email or WhatsApp). The same backup file also restores into the PC version.</p>`
+                    : `<p class="mini-sub" style="margin:0 0 14px">Everything lives in a single SQLite file at <code>data/freshmart.db</code>.
                     Download a zip any time. The app also keeps a dated copy under <code>data/backups/</code>
-                    automatically — now <b>every day the server is running</b>, not just the day it started.</p>
-                <button class="btn btn-primary" id="downloadBackupBtn">⬇ Download Backup (.zip)</button>
+                    automatically — now <b>every day the server is running</b>, not just the day it started.</p>`}
+                <button class="btn btn-primary" id="downloadBackupBtn">${LOCAL_MODE ? "⬆ Save / Share Backup (.zip)" : "⬇ Download Backup (.zip)"}</button>
             </div>
         </div>
         <div class="card settings-card" style="margin-top:16px">
             <div class="card-head"><div class="card-title">Restore from Backup</div></div>
             <div class="card-body">
-                <p class="mini-sub" style="margin:0 0 14px">Replace <b>all current data</b> with a backup zip you
+                ${LOCAL_MODE
+                    ? `<p class="mini-sub" style="margin:0 0 14px">Replace <b>all data on this phone</b> with a backup zip — from this
+                        phone or from the PC version. It takes effect straight away, and you then sign in with an account from
+                        that backup.</p>`
+                    : `<p class="mini-sub" style="margin:0 0 14px">Replace <b>all current data</b> with a backup zip you
                     downloaded earlier. For safety the restore is <b>staged</b> and takes effect the next time the app
-                    starts; your current data is copied to <code>data/backups/pre-restore-…</code> first.</p>
+                    starts; your current data is copied to <code>data/backups/pre-restore-…</code> first.</p>`}
                 <div class="field" style="max-width:420px">
                     <input class="input" id="restoreFile" type="file" accept=".zip,application/zip">
                 </div>
@@ -2516,9 +2583,11 @@ function renderBackupTab(body) {
         if (!file) { toast("Choose a backup .zip first", "error"); return; }
         confirmAction({
             title: "Restore from backup?",
-            message: `This will replace <b>all current data</b> with <b>${esc(file.name)}</b> when the app next starts.
+            message: LOCAL_MODE
+                ? `This will replace <b>all data on this phone</b> with <b>${esc(file.name)}</b> right now. Continue?`
+                : `This will replace <b>all current data</b> with <b>${esc(file.name)}</b> when the app next starts.
                 Your current data is saved to a pre-restore folder first. Continue?`,
-            confirmLabel: "Stage Restore",
+            confirmLabel: LOCAL_MODE ? "Restore Now" : "Stage Restore",
             busyLabel: "Uploading…",
             onConfirm: async () => {
                 const buf = await file.arrayBuffer();
@@ -2532,11 +2601,13 @@ function renderBackupTab(body) {
                 closeModal();
                 openModal(`
                     <div class="modal" style="max-width:420px">
-                        <div class="modal-head"><h3>Restore staged</h3></div>
+                        <div class="modal-head"><h3>${data.restored ? "Backup restored" : "Restore staged"}</h3></div>
                         <div class="modal-body"><p class="mini-sub" style="margin:0">${esc(data.message || "Restart the app to complete the restore.")}</p></div>
                         <div class="modal-foot"><button class="btn btn-primary" id="restoreOkBtn">Got it</button></div>
                     </div>`);
-                document.getElementById("restoreOkBtn").onclick = closeModal;
+                // The phone applies a restore immediately, and the restored data has its own accounts -
+                // reload into its sign-in screen.
+                document.getElementById("restoreOkBtn").onclick = data.restored ? () => location.reload() : closeModal;
             }
         });
     };

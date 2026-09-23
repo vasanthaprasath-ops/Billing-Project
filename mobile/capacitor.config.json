@@ -1,0 +1,11 @@
+{
+  "appId": "com.freshmart.billing",
+  "appName": "FreshMart Billing",
+  "webDir": "www",
+  "plugins": {
+    "SystemBars": {
+      "insetsHandling": "css",
+      "style": "DARK"
+    }
+  }
+}
