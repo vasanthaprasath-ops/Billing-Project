@@ -476,6 +476,11 @@ tr.tbl-group-row td {
     border-color: var(--green);
     box-shadow: 0 0 0 3px var(--green-soft);
 }
+.input.invalid, .input.invalid:focus { border-color: var(--red); box-shadow: 0 0 0 3px rgba(220, 38, 38, .15); }
+.field-msg { color: var(--red); font-size: 12px; font-weight: 500; margin-top: 4px; }
+/* Upper-cases what's typed (state codes) but not the hint - "e.g." shouldn't read "E.G.". */
+.input-upper { text-transform: uppercase; }
+.input-upper::placeholder { text-transform: none; }
 .search {
     max-width: 320px;
     background: #fff url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2'><circle cx='11' cy='11' r='7'/><path d='m21 21-4.3-4.3'/></svg>") no-repeat 11px center;
@@ -517,7 +522,8 @@ tr.tbl-group-row td {
 .product-card.out { opacity: .55; cursor: not-allowed; }
 .product-card.out:hover { transform: none; border-color: var(--border); box-shadow: none; }
 .pc-name { font-weight: 600; font-size: 13.5px; line-height: 1.3; min-height: 35px; }
-.pc-cat { font-size: 11px; color: var(--muted-2); }
+.pc-cat { font-size: 11px; color: var(--muted-2); padding-right: 26px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pc-id { font-variant-numeric: tabular-nums; }
 .pc-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 6px; }
 .pc-price { font-weight: 800; color: var(--green-dark); }
 .pc-stock { font-size: 11px; padding: 2px 7px; border-radius: 20px; background: #f1f5f4; color: var(--muted); }
@@ -555,7 +561,10 @@ tr.tbl-group-row td {
     border-bottom: 1px dashed var(--border);
 }
 .cl-info { flex: 1; min-width: 0; }
-.cl-name { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cl-name {
+    font-weight: 600; font-size: 13px; line-height: 1.3; overflow: hidden; overflow-wrap: break-word;
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2;
+}
 .cl-price { font-size: 11.5px; color: var(--muted); }
 .cl-amt { font-weight: 700; font-variant-numeric: tabular-nums; min-width: 64px; text-align: right; }
 .stepper { display: flex; align-items: center; gap: 4px; }
@@ -701,9 +710,12 @@ tr.tbl-group-row td {
 @keyframes pop { from { opacity: 0; transform: translateY(8px) scale(.98); } }
 
 /* ---------------- Toasts ---------------- */
+/* Top-centre, over the topbar's empty middle: bottom-right sat on top of the New Bill
+   Checkout button, so an error covered the very button the cashier needed next. */
 .toast-root {
-    position: fixed; bottom: 22px; right: 22px;
-    display: flex; flex-direction: column; gap: 10px; z-index: 60;
+    position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
+    display: flex; flex-direction: column; align-items: center; gap: 10px; z-index: 60;
+    max-width: calc(100vw - 32px);
 }
 .toast {
     background: var(--ink); color: #fff; padding: 12px 16px; border-radius: 10px;
@@ -715,7 +727,7 @@ tr.tbl-group-row td {
 .toast.success { background: #14532d; }
 .toast.error { background: #7f1d1d; }
 .toast .t-ico { font-size: 16px; }
-@keyframes slidein { from { opacity: 0; transform: translateX(20px); } }
+@keyframes slidein { from { opacity: 0; transform: translateY(-8px); } }
 
 .empty-state { text-align: center; color: var(--muted-2); padding: 50px 20px; }
 .empty-state .big { font-size: 40px; margin-bottom: 10px; }
@@ -792,7 +804,7 @@ tr.tbl-group-row td {
 .sidebar-actions .btn:hover { background: rgba(255, 255, 255, .1); color: #fff; }
 
 /* ---------------- Branch switcher ---------------- */
-.branch-switcher { width: auto; max-width: 220px; padding: 7px 10px; font-size: 13px; font-weight: 600; }
+.branch-switcher { width: auto; max-width: 280px; padding: 7px 10px; font-size: 13px; font-weight: 600; }
 
 /* ---------------- Barcode scan bar ---------------- */
 .barcode-bar {
@@ -908,6 +920,26 @@ tr.tbl-group-row td {
     .stat-grid { grid-template-columns: 1fr; }
     .content { padding: 16px; }
     .branch-switcher { max-width: 140px; }
+    .brand-text { display: none; }
+    .topbar { padding: 0 16px; gap: 10px; }
+    .topbar .clock, .topbar .status-dot { display: none; }
+    /* Name on its own row, controls under it - side by side the name got ~50px. */
+    .cart-line { flex-wrap: wrap; }
+    .cl-info { flex: 1 1 100%; }
+    .cart-line .stepper { margin-right: auto; }
+}
+
+/* Touch screens (phones, tablet tills): lift the small controls to a comfortable ~36-40px
+   tap size - the desktop sizes (24px steppers, 12px chips) are fine for a mouse only. */
+@media (pointer: coarse) {
+    .stepper button { width: 36px; height: 36px; }
+    .stepper input { height: 36px; }
+    .cl-remove { min-width: 36px; min-height: 36px; }
+    .pc-add { width: 32px; height: 32px; }
+    .pc-cat { padding-right: 34px; }
+    .btn-sm, .chip { min-height: 36px; }
+    .modal-close { min-width: 40px; min-height: 40px; }
+    .link-action { min-height: 36px; }
 }
 
 /* Below ~1100px, drop the topbar subtitle and shrink the branch selector so the
@@ -991,6 +1023,7 @@ tr.tbl-group-row td {
     .stepper button:hover { background: #1c273a; }
     .stepper input { background: #0f172a; color: var(--ink); border-color: var(--border); }
     .cart-line { border-bottom-color: #263241; }
+    .field-msg { color: #fca5a5; }
 
     .stat-ico.green { background: #14532d; }
     .stat-ico.blue { background: #1e3a5f; }
@@ -1063,6 +1096,7 @@ tr.tbl-group-row td {
 :root[data-theme="dark"] .stepper button:hover { background: #1c273a; }
 :root[data-theme="dark"] .stepper input { background: #0f172a; color: var(--ink); border-color: var(--border); }
 :root[data-theme="dark"] .cart-line { border-bottom-color: #263241; }
+:root[data-theme="dark"] .field-msg { color: #fca5a5; }
 :root[data-theme="dark"] .stat-ico.green { background: #14532d; }
 :root[data-theme="dark"] .stat-ico.blue { background: #1e3a5f; }
 :root[data-theme="dark"] .stat-ico.amber { background: #3a2b0f; }

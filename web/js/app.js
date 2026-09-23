@@ -165,12 +165,49 @@ function toast(msg, type = "info") {
         clearTimeout(timer);
         t.style.transition = "all .3s";
         t.style.opacity = "0";
-        t.style.transform = "translateX(20px)";
+        t.style.transform = "translateY(-8px)";
         setTimeout(() => t.remove(), 300);
     };
     t.addEventListener("click", dismiss);
     // Errors linger longer than success/info - they usually need action, not just a glance.
     const timer = setTimeout(dismiss, type === "error" ? 6000 : 3200);
+}
+
+/** Inline form validation for modal forms: every failing field is outlined in red with its
+ *  message right under it (all at once, instead of one toast per Save attempt), the first is
+ *  focused, and each field's message clears as soon as it is edited.
+ *  errors: [[inputId, message], ...]. Returns true when there are none. */
+function showFieldErrors(errors) {
+    const root = document.getElementById("modalRoot");
+    root.querySelectorAll(".field-msg").forEach(m => m.remove());
+    root.querySelectorAll(".input.invalid").forEach(i => {
+        i.classList.remove("invalid");
+        i.removeAttribute("aria-invalid");
+        i.removeAttribute("aria-describedby");
+    });
+    errors.forEach(([id, msg]) => {
+        const input = document.getElementById(id);
+        if (!input) return;
+        const note = document.createElement("div");
+        note.className = "field-msg";
+        note.id = id + "Err";
+        note.textContent = msg;
+        (input.closest(".pw-wrap") || input).insertAdjacentElement("afterend", note);
+        input.classList.add("invalid");
+        input.setAttribute("aria-invalid", "true");
+        input.setAttribute("aria-describedby", note.id);
+        input.addEventListener("input", () => {
+            note.remove();
+            input.classList.remove("invalid");
+            input.removeAttribute("aria-invalid");
+            input.removeAttribute("aria-describedby");
+        }, { once: true });
+    });
+    if (errors.length) {
+        const first = document.getElementById(errors[0][0]);
+        if (first) first.focus();
+    }
+    return errors.length === 0;
 }
 
 let modalLastFocused = null;
@@ -356,11 +393,7 @@ async function doLogin(e) {
     try {
         session = await api.post("/api/auth/login", { username, password });
         document.getElementById("loginPassword").value = "";
-        showApp();
-        await bootApp();
-        if (session.mustChangePassword) {
-            openChangePasswordModal(true);
-        }
+        await enterApp();
     } catch (err) {
         errEl.textContent = err.message;
         errEl.classList.remove("hidden");
@@ -368,6 +401,21 @@ async function doLogin(e) {
         btn.disabled = false;
         btn.textContent = "Sign In";
     }
+}
+
+/** Show the app for the signed-in session. A user who must still set their first password
+ *  gets only the forced password modal: the server refuses every other call until then, so
+ *  booting now would load nothing (no branches, no products) and the screen would stay empty
+ *  after the password was set. The modal boots the app once the new password is saved. */
+async function enterApp() {
+    showApp();
+    if (session.mustChangePassword) {
+        applyRoleVisibility();
+        renderUserBox();
+        openChangePasswordModal(true);
+        return;
+    }
+    await bootApp();
 }
 
 async function doLogout() {
@@ -417,8 +465,11 @@ function openChangePasswordModal(forced) {
     document.getElementById("mSave").onclick = () => withBusy(document.getElementById("mSave"), "Saving…", async () => {
         const newPassword = document.getElementById("cpNew").value;
         const confirmValue = document.getElementById("cpConfirm").value;
-        if (newPassword.length < 6) { toast("New password must be at least 6 characters", "error"); return; }
-        if (newPassword !== confirmValue) { toast("Passwords do not match", "error"); return; }
+        const errors = [];
+        if (!forced && !document.getElementById("cpCurrent").value) errors.push(["cpCurrent", "Enter your current password"]);
+        if (newPassword.length < 6) errors.push(["cpNew", "Must be at least 6 characters"]);
+        else if (newPassword !== confirmValue) errors.push(["cpConfirm", "Passwords do not match"]);
+        if (!showFieldErrors(errors)) return;
         const body = { newPassword };
         if (!forced) body.currentPassword = document.getElementById("cpCurrent").value;
         try {
@@ -426,7 +477,9 @@ function openChangePasswordModal(forced) {
             closeModal();
             renderUserBox();
             toast("Password updated", "success");
-        } catch (e) { toast(e.message, "error"); }
+        } catch (e) { toast(e.message, "error"); return; }
+        // First sign-in skipped bootApp (see enterApp) - load the app now that the server allows it.
+        if (forced) await bootApp();
     });
 }
 
@@ -437,10 +490,22 @@ function applyRoleVisibility() {
 }
 
 function renderUserBox() {
+    // Admins aren't tied to a branch - show the one they're currently viewing instead of a
+    // fixed "All Branches" that contradicts the switcher once a branch is picked.
+    const viewing = session.role === "ADMIN" && currentBranchId
+        ? branches.find(b => b.id === currentBranchId) : null;
+    const branchLabel = viewing ? "Viewing " + viewing.name : (session.branchName || "All Branches");
     document.getElementById("userBox").innerHTML = `
         <div class="u-name">${esc(session.fullName || session.username)}</div>
-        <div class="u-branch mini-sub">${esc(session.branchName || "All Branches")}</div>
+        <div class="u-branch mini-sub">${esc(branchLabel)}</div>
         <span class="u-role">${esc(session.role)}</span>`;
+}
+
+/** A long branch name is cut off in the narrow switcher - expose the full name on hover. */
+function syncBranchSwitcherTitle() {
+    const sel = document.getElementById("branchSwitcher");
+    const opt = sel.options[sel.selectedIndex];
+    sel.title = opt ? opt.textContent : "";
 }
 
 function setupBranchSwitcher() {
@@ -454,11 +519,18 @@ function setupBranchSwitcher() {
     const saved = localStorage.getItem("fm_branch") || "all";
     sel.innerHTML = `<option value="all">All Branches</option>` +
         branches.map(b => `<option value="${esc(b.id)}">${esc(b.name)}</option>`).join("");
-    sel.value = branches.some(b => b.id === saved) ? saved : "all";
+    // With a single branch, "All Branches" shows the same figures but blocks billing and
+    // product edits behind a "Pick a branch" step - so start on that one branch instead.
+    sel.value = branches.some(b => b.id === saved) ? saved
+        : branches.length === 1 ? branches[0].id
+        : "all";
     currentBranchId = sel.value === "all" ? null : sel.value;
+    syncBranchSwitcherTitle();
     sel.onchange = () => {
         currentBranchId = sel.value === "all" ? null : sel.value;
         localStorage.setItem("fm_branch", sel.value);
+        syncBranchSwitcherTitle();
+        renderUserBox();
         renderStoreFooter();
         // Re-render only AFTER the new branch's items have loaded. Firing loadItems()
         // without awaiting it let refreshCurrentView() paint the Products/Billing screen
@@ -486,6 +558,8 @@ function wireBranchPicker(onPicked) {
         currentBranchId = sel.value;
         document.getElementById("branchSwitcher").value = sel.value;
         localStorage.setItem("fm_branch", sel.value);
+        syncBranchSwitcherTitle();
+        renderUserBox();
         onPicked();
     };
 }
@@ -998,6 +1072,8 @@ function openRestock(id, branchId) {
         const sel = document.getElementById("branchSwitcher");
         if (sel) sel.value = branchId;
         localStorage.setItem("fm_branch", branchId);
+        syncBranchSwitcherTitle();
+        renderUserBox();
     }
     // The restock flow used to open the full Edit Product modal - which meant any stock
     // number typed while cashiers were selling would clobber the live count on save
@@ -1072,7 +1148,7 @@ function openAdjustStockModal(item) {
     document.getElementById("mCancel").onclick = closeModal;
     document.getElementById("mSave").onclick = () => withBusy(document.getElementById("mSave"), "Saving…", async () => {
         const q = qty();
-        if (q <= 0) { toast("Enter a positive quantity", "error"); return; }
+        if (!showFieldErrors(q > 0 ? [] : [["adjQty", "Enter a quantity greater than 0"]])) return;
         const body = {
             branchId: currentBranchId,
             reason: document.getElementById("adjReason").value.trim()
@@ -1121,7 +1197,7 @@ function renderBilling() {
                 <div class="card-body">
                     <div class="barcode-bar">
                         <span class="b-ico">📷</span>
-                        <input id="barcodeInput" placeholder="Scan barcode or type item ID, then press Enter" autocomplete="off">
+                        <input id="barcodeInput" placeholder="Scan barcode or type item ID${items.length ? " (e.g. " + esc(items[0].id) + ")" : ""}, then press Enter" autocomplete="off">
                     </div>
                     <div class="product-grid" id="productGrid"></div>
                 </div>
@@ -1144,8 +1220,11 @@ function renderBilling() {
                                 <div class="field"><label for="payMode">Payment</label>
                                     <select class="input" id="payMode"><option>Cash</option><option>Card</option><option>UPI</option></select></div>
                             </div>
-                            <div class="field"><label for="posState">Place of Supply <span class="mini-sub">— buyer's state (leave blank for local sale)</span></label>
-                                <input class="input" id="posState" maxlength="4" style="text-transform:uppercase" placeholder="e.g. TN, KA (for IGST)"></div>
+                            <div class="field">
+                                <button type="button" class="link-action" id="posToggle" aria-expanded="false" aria-controls="posStateWrap">＋ Selling to another state? (IGST)</button>
+                                <div class="hidden" id="posStateWrap" style="margin-top:8px">
+                                    <label for="posState">Place of Supply <span class="mini-sub">— buyer's state code; leave blank for a local sale</span></label>
+                                    <input class="input input-upper" id="posState" maxlength="4" placeholder="e.g. TN, KA"></div></div>
                             <div class="field"><label for="discount">Discount (${esc(store.currency)})</label>
                                 <input class="input" id="discount" type="number" min="0" step="0.01" value="0"></div>
                             <div class="field" id="cashPaidField"><label for="cashPaid">Cash Tendered (${esc(store.currency)})</label>
@@ -1175,6 +1254,16 @@ function renderBilling() {
     document.getElementById("cashPaid").addEventListener("input", renderTotals);
     document.getElementById("payMode").addEventListener("change", renderTotals);
     document.getElementById("checkoutBtn").addEventListener("click", doCheckout);
+    // Place of Supply only matters for interstate (IGST) sales - most bills are local, so the
+    // field stays folded away and a cashier isn't asked about tax state codes on every sale.
+    document.getElementById("posToggle").addEventListener("click", e => {
+        const wrap = document.getElementById("posStateWrap");
+        const open = wrap.classList.toggle("hidden") === false;
+        e.currentTarget.setAttribute("aria-expanded", String(open));
+        e.currentTarget.textContent = open ? "－ Local sale (no IGST)" : "＋ Selling to another state? (IGST)";
+        const input = document.getElementById("posState");
+        if (open) input.focus(); else input.value = "";
+    });
 
     // Quick cash-tender chips: "Exact" fills the grand total (zero change), each
     // note chip adds that denomination to what's already tendered (so two ₹500s
@@ -1247,7 +1336,7 @@ async function handleBarcodeScan() {
             addToCart(hits[0].id);
             toast(hits[0].name + " added", "success");
         } else {
-            toast("No product matches " + code, "error");
+            toast(`No product with barcode or item ID "${code}" - item IDs are shown on each product card`, "error");
         }
     } catch (e) {
         toast(e.message, "error");
@@ -1273,7 +1362,7 @@ function renderProductGrid(filter) {
         const low = it.stock > 0 && it.stock <= it.reorderLevel;
         return `<div class="product-card ${out ? "out" : ""}" data-id="${esc(it.id)}">
             ${out ? "" : `<button class="pc-add" data-id="${esc(it.id)}" type="button" title="Add ${esc(it.name)} to bill" aria-label="Add ${esc(it.name)} to bill">+</button>`}
-            <div class="pc-cat">${esc(it.category)}</div>
+            <div class="pc-cat"><span class="pc-id">${esc(it.id)}</span> · ${esc(it.category)}</div>
             <div class="pc-name">${esc(it.name)}</div>
             <div class="pc-foot">
                 <span class="pc-price">${money(it.price)}</span>
@@ -1337,7 +1426,7 @@ function renderCart() {
         linesEl.innerHTML = cart.map((l, i) => `
             <div class="cart-line">
                 <div class="cl-info">
-                    <div class="cl-name">${esc(l.name)}</div>
+                    <div class="cl-name" title="${esc(l.name)}">${esc(l.name)}</div>
                     <div class="cl-price">${money(l.price)} × ${fmtQty(l.qty)} ${esc(l.unit)}</div>
                 </div>
                 <div class="stepper">
@@ -1651,7 +1740,7 @@ async function saveProduct(editing, id) {
         reorderLevel: Math.max(0, parseFloat(document.getElementById("fReorder").value) || 0),
         barcode: document.getElementById("fBarcode").value.trim()
     };
-    if (!dto.name) { toast("Product name is required", "error"); return; }
+    if (!showFieldErrors(dto.name ? [] : [["fName", "Product name is required"]])) return;
     try {
         if (editing) await api.put("/api/items/" + encodeURIComponent(id), dto);
         else await api.post("/api/items", dto);
@@ -2029,7 +2118,7 @@ function openBranchModal(branch, allBranches) {
             gstin: document.getElementById("fbGstin").value.trim(),
             stateCode: document.getElementById("fbStateCode").value.trim().toUpperCase()
         };
-        if (!dto.name) { toast("Branch name is required", "error"); return; }
+        if (!showFieldErrors(dto.name ? [] : [["fbName", "Branch name is required"]])) return;
         try {
             if (editing) {
                 dto.active = document.getElementById("fbActive").value === "true";
@@ -2114,8 +2203,10 @@ function openUserModal(user) {
             password: document.getElementById("fuPassword").value,
             active: editing ? document.getElementById("fuActive").value === "true" : true
         };
-        if (!dto.username) { toast("Username is required", "error"); return; }
-        if (!editing && dto.password.length < 6) { toast("Password must be at least 6 characters", "error"); return; }
+        const errors = [];
+        if (!dto.username) errors.push(["fuUsername", "Username is required"]);
+        if (!editing && dto.password.length < 6) errors.push(["fuPassword", "Must be at least 6 characters"]);
+        if (!showFieldErrors(errors)) return;
         try {
             if (editing) await api.put("/api/users/" + encodeURIComponent(user.username), dto);
             else await api.post("/api/users", dto);
@@ -2519,8 +2610,8 @@ async function bootApp() {
     // The full branch list (address/phone/GSTIN of every branch) is admin-only server-side;
     // Manager/Cashier already know their own branch from /api/auth/me and never need this.
     try { branches = session.role === "ADMIN" ? await api.get("/api/branches") : []; } catch (e) { branches = []; }
-    renderUserBox();
     setupBranchSwitcher();
+    renderUserBox();
     // Render the footer AFTER the branch is known, so the address block reflects the
     // active branch (admin's saved pick or the non-admin's own branch) instead of the
     // store-wide default.
@@ -2566,11 +2657,7 @@ async function init() {
 
     try {
         session = await api.get("/api/auth/me");
-        showApp();
-        await bootApp();
-        if (session.mustChangePassword) {
-            openChangePasswordModal(true);
-        }
+        await enterApp();
     } catch (e) {
         showLogin();
         try {
