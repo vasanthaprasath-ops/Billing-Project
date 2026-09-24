@@ -13,7 +13,7 @@ rmSync(www, { recursive: true, force: true });
 cpSync(join(here, "..", "web"), www, { recursive: true });
 
 mkdirSync(join(www, "js", "local"), { recursive: true });
-for (const f of ["pdf.js", "zip.js", "backend.js", "bridge.js", "m3.js", "feel.js"]) copyFileSync(join(here, "src", f), join(www, "js", "local", f));
+for (const f of ["pdf.js", "zip.js", "backend.js", "bridge.js", "m3.js", "feel.js", "scan.js"]) copyFileSync(join(here, "src", f), join(www, "js", "local", f));
 copyFileSync(join(here, "src", "mobile.css"), join(www, "css", "mobile.css"));
 
 mkdirSync(join(www, "vendor"), { recursive: true });
@@ -40,6 +40,7 @@ replaceOnce('<script src="/js/app.js"></script>', [
     '<script src="/js/app.js"></script>',
     '<script src="/js/local/m3.js"></script>',
     '<script src="/js/local/feel.js"></script>',
+    '<script src="/js/local/scan.js"></script>',
 ].join("\n"));
 writeFileSync(indexPath, html);
 console.log("Built " + www);

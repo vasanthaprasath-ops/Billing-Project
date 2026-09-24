@@ -569,3 +569,16 @@ table.tbl tbody tr:not(.tbl-group-row):hover { background: color-mix(in srgb, va
 @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
 }
+
+/* camera scan buttons (scan.js) */
+.fm-scan-btn {
+    flex-shrink: 0; width: 48px; height: 48px; border-radius: 50%; border: 0; cursor: pointer;
+    background: var(--md-primary); color: var(--md-on-primary); display: grid; place-items: center;
+    box-shadow: var(--md-elev-1); position: relative; overflow: hidden; transition: transform .12s;
+}
+.fm-scan-btn:active { transform: scale(.92); }
+.fm-scan-field { display: flex; align-items: center; gap: 8px; flex: 1 1 100%; }
+.fm-scan-field > .input { flex: 1; min-width: 0; }
+.fm-scan-field .fm-scan-btn { width: 44px; height: 44px; background: var(--md-secondary-container); color: var(--md-on-secondary-container); box-shadow: none; }
+.barcode-bar:has(.fm-scan-btn) .b-ico { display: none; }
+.barcode-bar:has(.fm-scan-btn) { padding-left: 20px; }

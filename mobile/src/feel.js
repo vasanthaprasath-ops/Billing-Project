@@ -72,6 +72,7 @@
     // ---------------- snackbar with an action (Undo) ----------------
     function snackbar(message, actionLabel, onAction) {
         const root = $("#toastRoot");
+        clearSnacks();
         const t = document.createElement("div");
         t.className = "toast info fm-snack";
         t.innerHTML = `<span class="t-msg"></span><button type="button" class="fm-snack-act"></button>`;
@@ -95,8 +96,11 @@
     });
 
     // ---------------- toasts: haptic on errors and successes ----------------
+    // One snackbar at a time (Material guideline): a new message replaces the one on screen.
+    const clearSnacks = () => document.querySelectorAll("#toastRoot > .toast").forEach(t => t.remove());
     around("toast", function (orig, args) {
         if (args[1] === "error") buzz.error();
+        clearSnacks();
         return orig.apply(this, args);
     });
 
