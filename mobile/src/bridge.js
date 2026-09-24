@@ -239,6 +239,7 @@
 
     if (App) {
         App.addListener("backButton", () => {
+            if (typeof window.m3Back === "function" && window.m3Back()) return;
             const overlay = document.querySelector("#modalRoot .modal-overlay");
             if (overlay) {
                 // Same as pressing Escape: closes a dismissible dialog, leaves a required one open.
