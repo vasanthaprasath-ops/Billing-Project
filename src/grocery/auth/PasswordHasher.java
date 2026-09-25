@@ -77,6 +77,25 @@ public final class PasswordHasher {
         return sb.toString();
     }
 
+    private static final String RECOVERY_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+    /** A one-time recovery code like {@code K7QM-3XRT-9WPB-2HDN} (80 bits, no look-alike characters). */
+    public static String randomRecoveryCode() {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < 16; i++) {
+            if (i > 0 && i % 4 == 0) {
+                sb.append('-');
+            }
+            sb.append(RECOVERY_ALPHABET.charAt(RNG.nextInt(RECOVERY_ALPHABET.length())));
+        }
+        return sb.toString();
+    }
+
+    /** Recovery codes are compared case-insensitively and without dashes or spaces. */
+    public static String normalizeRecoveryCode(String code) {
+        return code == null ? "" : code.toUpperCase(java.util.Locale.ROOT).replaceAll("[^A-Z0-9]", "");
+    }
+
     /** A random URL-safe session token. */
     public static String randomToken() {
         byte[] b = new byte[32];

@@ -47,7 +47,41 @@ public class Main {
             return;
         }
 
+        if (args.length > 0 && "--reset-password".equals(args[0])) {
+            resetPassword(args.length > 1 ? args[1] : "admin");
+            return;
+        }
+
         startServer(resolvePort(args));
+    }
+
+    /**
+     * Last-resort "forgot password" for whoever runs the server PC: sets a temporary password
+     * for the account (printed once) that must be changed at the next sign-in. For an admin who
+     * lost both their password and their recovery code - physical access to this machine is the
+     * proof. Run it with FreshMart stopped (or restart it afterwards): the running server keeps
+     * accounts in memory.
+     */
+    private static void resetPassword(String username) {
+        AppContext ctx = buildContext();
+        grocery.model.User user = ctx.users().findByUsername(username);
+        if (user == null) {
+            System.out.println("  No account named '" + username + "'. Accounts:");
+            for (grocery.model.User u : ctx.users().getAll()) {
+                System.out.println("    " + u.getUsername() + "  (" + u.getFullName() + ", " + u.getRole() + ")");
+            }
+            return;
+        }
+        String temp = grocery.auth.PasswordHasher.randomPassword();
+        user.setPasswordHash(grocery.auth.PasswordHasher.hash(temp));
+        user.setMustChangePassword(true);
+        user.setActive(true);
+        ctx.users().update(user);
+        ctx.auditLog().logSystem("PASSWORD_RESET_CLI", user.getUsername());
+        System.out.println();
+        System.out.println("  Temporary password for " + user.getUsername() + ":  " + temp);
+        System.out.println("  Sign in with it and choose a new password. If FreshMart is running, restart it first.");
+        System.out.println();
     }
 
     /**

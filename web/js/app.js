@@ -10,7 +10,10 @@ let currentBranchId = null; // ADMIN: selected branch, or null = "All Branches";
 let items = [];        // catalogue, refreshed from the server
 let cart = [];         // [{id,name,unit,price,taxRatePercent,stock,qty}]
 let currentView = "dashboard";
-let currentAdminTab = "branches";
+// True inside the Android app, where the "server" is the on-device backend (mobile/src/bridge.js):
+// one shop per phone, shop details edited in-app, backups shared from the phone.
+const LOCAL_MODE = !!window.FM_LOCAL;
+let currentAdminTab = LOCAL_MODE ? "shop" : "branches";
 let invoicesSubTab = "sales"; // "sales" or "returns"
 let productsLowStockOnly = false; // true only when Products was opened via a "Low Stock" shortcut
 const PAGE_SIZE_CHOICES = [10, 20, 50, 100];
@@ -165,12 +168,52 @@ function toast(msg, type = "info") {
         clearTimeout(timer);
         t.style.transition = "all .3s";
         t.style.opacity = "0";
-        t.style.transform = "translateX(20px)";
+        t.style.transform = "translateY(-8px)";
         setTimeout(() => t.remove(), 300);
     };
     t.addEventListener("click", dismiss);
     // Errors linger longer than success/info - they usually need action, not just a glance.
     const timer = setTimeout(dismiss, type === "error" ? 6000 : 3200);
+}
+
+/** Inline form validation for modal forms: every failing field is outlined in red with its
+ *  message right under it (all at once, instead of one toast per Save attempt), the first is
+ *  focused, and each field's message clears as soon as it is edited.
+ *  errors: [[inputId, message], ...]. Returns true when there are none. */
+function showFieldErrors(errors) {
+    return showFieldErrorsIn(document.getElementById("modalRoot"), errors);
+}
+
+function showFieldErrorsIn(root, errors) {
+    root.querySelectorAll(".field-msg").forEach(m => m.remove());
+    root.querySelectorAll(".input.invalid").forEach(i => {
+        i.classList.remove("invalid");
+        i.removeAttribute("aria-invalid");
+        i.removeAttribute("aria-describedby");
+    });
+    errors.forEach(([id, msg]) => {
+        const input = document.getElementById(id);
+        if (!input) return;
+        const note = document.createElement("div");
+        note.className = "field-msg";
+        note.id = id + "Err";
+        note.textContent = msg;
+        (input.closest(".pw-wrap") || input).insertAdjacentElement("afterend", note);
+        input.classList.add("invalid");
+        input.setAttribute("aria-invalid", "true");
+        input.setAttribute("aria-describedby", note.id);
+        input.addEventListener("input", () => {
+            note.remove();
+            input.classList.remove("invalid");
+            input.removeAttribute("aria-invalid");
+            input.removeAttribute("aria-describedby");
+        }, { once: true });
+    });
+    if (errors.length) {
+        const first = document.getElementById(errors[0][0]);
+        if (first) first.focus();
+    }
+    return errors.length === 0;
 }
 
 let modalLastFocused = null;
@@ -333,6 +376,7 @@ function confirmAction({ title, message, confirmLabel = "Confirm", busyLabel = "
 function showLogin() {
     document.getElementById("appRoot").classList.add("hidden");
     document.getElementById("loginScreen").classList.remove("hidden");
+    setLoginAccount(rememberedAccount());
 }
 function showApp() {
     document.getElementById("loginScreen").classList.add("hidden");
@@ -356,11 +400,8 @@ async function doLogin(e) {
     try {
         session = await api.post("/api/auth/login", { username, password });
         document.getElementById("loginPassword").value = "";
-        showApp();
-        await bootApp();
-        if (session.mustChangePassword) {
-            openChangePasswordModal(true);
-        }
+        rememberAccount(session);
+        await enterApp();
     } catch (err) {
         errEl.textContent = err.message;
         errEl.classList.remove("hidden");
@@ -368,6 +409,287 @@ async function doLogin(e) {
         btn.disabled = false;
         btn.textContent = "Sign In";
     }
+}
+
+/** Show the app for the signed-in session. A user who must still set their first password
+ *  gets only the forced password modal: the server refuses every other call until then, so
+ *  booting now would load nothing (no branches, no products) and the screen would stay empty
+ *  after the password was set. The modal boots the app once the new password is saved. */
+async function enterApp() {
+    showApp();
+    if (session.mustChangePassword) {
+        applyRoleVisibility();
+        renderUserBox();
+        openChangePasswordModal(true);
+        return;
+    }
+    await bootApp();
+    if (session.role === "ADMIN" && !session.hasRecoveryCode && !sessionStorage.getItem("fm_rc_nudged")) {
+        try { sessionStorage.setItem("fm_rc_nudged", "1"); } catch (e) { /* private mode */ }
+        toast("Tip: create a recovery code in Settings, so you can reset your password if you ever forget it.", "info");
+    }
+}
+
+/* ============================================================
+   ACCOUNT RECOVERY - remembered account, "Forgot username?", "Forgot password?"
+   ============================================================ */
+const LAST_ACCOUNT_KEY = "fm_last_account";
+
+function rememberedAccount() {
+    try { return JSON.parse(localStorage.getItem(LAST_ACCOUNT_KEY) || "null"); } catch (e) { return null; }
+}
+function rememberAccount(s) {
+    try { localStorage.setItem(LAST_ACCOUNT_KEY, JSON.stringify({ username: s.username, fullName: s.fullName || s.username })); } catch (e) { /* ignore */ }
+}
+const initialOf = name => esc(String(name || "?").trim().charAt(0).toUpperCase() || "?");
+const roleLabel = r => ({ ADMIN: "Owner / Admin", MANAGER: "Manager", CASHIER: "Cashier" })[r] || r;
+
+/** Sign-in screen for a known account (Google-style chip + password), or a blank username field. */
+function setLoginAccount(acc) {
+    const chip = document.getElementById("loginChip");
+    const userField = document.getElementById("loginUserField");
+    const input = document.getElementById("loginUsername");
+    if (acc && acc.username) {
+        input.value = acc.username;
+        document.getElementById("loginChipAvatar").innerHTML = initialOf(acc.fullName || acc.username);
+        document.getElementById("loginChipName").textContent = acc.fullName || acc.username;
+        document.getElementById("loginChipUser").textContent = acc.username;
+        chip.classList.remove("hidden");
+        userField.classList.add("hidden");
+        document.getElementById("loginSub").textContent = "Welcome back";
+        setTimeout(() => document.getElementById("loginPassword").focus(), 0);
+    } else {
+        chip.classList.add("hidden");
+        userField.classList.remove("hidden");
+        document.getElementById("loginSub").textContent = "Sign in to continue";
+    }
+}
+
+/** The shop's accounts as tappable tiles. onPick(account) - or null for "use another account". */
+async function openAccountPicker(title, onPick) {
+    let accounts;
+    try { accounts = await api.get("/api/auth/accounts"); } catch (e) { toast(e.message, "error"); return; }
+    openModal(`
+        <div class="modal" style="max-width:420px">
+            <div class="modal-head"><h3>${esc(title)}</h3><button class="modal-close" id="mClose">×</button></div>
+            <div class="modal-body">
+                <p class="mini-sub" style="margin:0 0 10px">Tap your name.</p>
+                <div class="acct-list">
+                    ${accounts.map((a, i) => `
+                        <button type="button" class="acct-row" data-i="${i}">
+                            <span class="acct-avatar">${initialOf(a.fullName || a.username)}</span>
+                            <span class="acct-text"><span class="acct-name">${esc(a.fullName || a.username)}</span>
+                                <span class="acct-user">${esc(a.username)} · ${esc(roleLabel(a.role))}</span></span>
+                        </button>`).join("")}
+                    <button type="button" class="acct-row" data-other="1">
+                        <span class="acct-avatar acct-avatar-plain">＋</span>
+                        <span class="acct-text"><span class="acct-name">Use another account</span>
+                            <span class="acct-user">Type a username</span></span>
+                    </button>
+                </div>
+            </div>
+        </div>`);
+    document.getElementById("mClose").onclick = closeModal;
+    document.querySelectorAll("#modalRoot .acct-row").forEach(b => b.onclick = () => {
+        closeModal();
+        onPick(b.dataset.other ? null : accounts[+b.dataset.i], accounts);
+    });
+}
+
+function forgotUsername() {
+    openAccountPicker("Choose your account", acc => {
+        setLoginAccount(acc);
+        if (!acc) document.getElementById("loginUsername").focus();
+    });
+}
+
+async function forgotPassword() {
+    const typed = document.getElementById("loginUsername").value.trim();
+    let accounts;
+    try { accounts = await api.get("/api/auth/accounts"); } catch (e) { toast(e.message, "error"); return; }
+    const found = typed && accounts.find(a => a.username.toLowerCase() === typed.toLowerCase());
+    if (found) return forgotPasswordFor(found, accounts);
+    openAccountPicker("Whose password?", (acc, list) => {
+        if (acc) forgotPasswordFor(acc, list);
+        else document.getElementById("loginUsername").focus();
+    });
+}
+
+async function forgotPasswordFor(acc, accounts) {
+    const owners = accounts.filter(a => a.role === "ADMIN").map(a => a.fullName || a.username);
+    if (acc.role !== "ADMIN") {
+        openModal(`
+            <div class="modal" style="max-width:420px">
+                <div class="modal-head"><h3>Ask your shop owner</h3></div>
+                <div class="modal-body"><p style="margin:0 0 10px">Only the owner can reset a staff password.</p>
+                    <p class="mini-sub" style="margin:0">Ask <b>${esc(owners.join(" or ") || "the owner")}</b> to open <b>Admin → Users</b>,
+                    tap <b>Edit</b> next to <b>${esc(acc.fullName || acc.username)}</b> and tap <b>Generate temporary password</b>.
+                    Sign in with it and you'll choose your own new password.</p></div>
+                <div class="modal-foot"><button class="btn btn-primary" id="mOk">Got it</button></div>
+            </div>`);
+        document.getElementById("mOk").onclick = closeModal;
+        return;
+    }
+    const device = window.fmDevice && await window.fmDevice.available();
+    openModal(`
+        <div class="modal" style="max-width:440px">
+            <div class="modal-head"><h3>Reset your password</h3><button class="modal-close" id="mClose">×</button></div>
+            <div class="modal-body">
+                <p class="mini-sub" style="margin:0 0 12px">For <b>${esc(acc.fullName || acc.username)}</b> (${esc(acc.username)}). Choose how to confirm it's you:</p>
+                <div class="acct-list">
+                    <button type="button" class="acct-row" id="rcCode">
+                        <span class="acct-avatar acct-avatar-plain">🔑</span>
+                        <span class="acct-text"><span class="acct-name">Use your recovery code</span>
+                            <span class="acct-user">The 16-character code you saved, like K7QM-3XRT-…</span></span>
+                    </button>
+                    ${device ? `<button type="button" class="acct-row" id="rcDevice">
+                        <span class="acct-avatar acct-avatar-plain">👆</span>
+                        <span class="acct-text"><span class="acct-name">Use this phone's screen lock</span>
+                            <span class="acct-user">Fingerprint, face or PIN</span></span>
+                    </button>` : ""}
+                </div>
+                <p class="mini-sub" style="margin:14px 0 0">${LOCAL_MODE
+                    ? (device ? "Lost the code too? Use the phone's screen lock above." : "Lost the code? Set a screen lock (PIN or fingerprint) in the phone's Settings, then come back here.")
+                    : "Lost the code? On the shop computer, stop FreshMart and run <code>run.bat --reset-password " + esc(acc.username) + "</code> for a temporary password."}</p>
+            </div>
+        </div>`);
+    document.getElementById("mClose").onclick = closeModal;
+    document.getElementById("rcCode").onclick = () => newPasswordForm(acc, true);
+    if (device) document.getElementById("rcDevice").onclick = () => newPasswordForm(acc, false);
+}
+
+/** Step 2 of "Forgot password?": new password (+ the recovery code when that's the proof). */
+function newPasswordForm(acc, withCode) {
+    openModal(`
+        <div class="modal" style="max-width:420px">
+            <div class="modal-head"><h3>Choose a new password</h3><button class="modal-close" id="mClose">×</button></div>
+            <div class="modal-body">
+                ${withCode ? `<div class="field"><label for="rcInput">Recovery code</label>
+                    <input class="input input-upper rc-input" id="rcInput" placeholder="XXXX-XXXX-XXXX-XXXX" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="19"></div>` : ""}
+                <div class="field"><label for="rcNew">New password</label>
+                    <input class="input" id="rcNew" type="password" placeholder="At least 6 characters" autocomplete="new-password"></div>
+                <div class="field"><label for="rcConfirm">Confirm new password</label>
+                    <input class="input" id="rcConfirm" type="password" autocomplete="new-password"></div>
+            </div>
+            <div class="modal-foot"><button class="btn" id="mCancel">Cancel</button>
+                <button class="btn btn-primary" id="mSave">${withCode ? "Reset password" : "Continue"}</button></div>
+        </div>`);
+    document.getElementById("mClose").onclick = closeModal;
+    document.getElementById("mCancel").onclick = closeModal;
+    const codeIn = document.getElementById("rcInput");
+    if (codeIn) {
+        // Types like the printed code: upper case, dash after every 4 characters.
+        codeIn.addEventListener("input", () => {
+            const raw = codeIn.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 16);
+            codeIn.value = raw.replace(/(.{4})(?=.)/g, "$1-");
+        });
+        codeIn.focus();
+    } else {
+        document.getElementById("rcNew").focus();
+    }
+    document.getElementById("mSave").onclick = () => withBusy(document.getElementById("mSave"), withCode ? "Checking…" : "Confirm on phone…", async () => {
+        const pw = document.getElementById("rcNew").value;
+        const errors = [];
+        if (codeIn && codeIn.value.replace(/-/g, "").length !== 16) errors.push(["rcInput", "Enter all 16 characters of the code"]);
+        if (pw.length < 6) errors.push(["rcNew", "Must be at least 6 characters"]);
+        else if (pw !== document.getElementById("rcConfirm").value) errors.push(["rcConfirm", "Passwords do not match"]);
+        if (!showFieldErrors(errors)) return;
+        try {
+            if (withCode) {
+                const data = await api.post("/api/auth/recover", { username: acc.username, recoveryCode: codeIn.value, newPassword: pw });
+                session = data.session;
+                rememberAccount(session);
+                closeModal();
+                await enterApp();
+                showRecoveryCode(data.recoveryCode, "Password changed",
+                    "You're signed in. Your old recovery code is now used up — save this new one in its place.");
+            } else {
+                session = await window.fmDevice.resetPassword(acc.username, pw);
+                rememberAccount(session);
+                closeModal();
+                await enterApp();
+                toast("Password changed — you're signed in", "success");
+            }
+        } catch (e) {
+            if (/recovery code/i.test(e.message)) showFieldErrors([["rcInput", e.message]]);
+            else if (!/cancel/i.test(e.message)) toast(e.message, "error");
+        }
+    });
+}
+
+/** Shows a recovery code once, with Copy + Save/Share, and asks the owner to confirm they kept it. */
+function showRecoveryCode(code, title, intro) {
+    document.querySelectorAll("#toastRoot .toast").forEach(t => t.remove());   // nothing may cover the code
+    openModal(`
+        <div class="modal" style="max-width:440px">
+            <div class="modal-head"><h3>${esc(title || "Save your recovery code")}</h3></div>
+            <div class="modal-body">
+                <p class="mini-sub" style="margin:0 0 12px">${esc(intro || "If you ever forget your password, this code lets you reset it.")}
+                    Keep it somewhere safe that isn't only this device — a photo, a note in your wallet or a message to yourself.
+                    It works once; you'll get a new code each time you use it.</p>
+                <div class="rc-code" id="rcCodeText">${esc(code)}</div>
+                <div class="rc-actions">
+                    <button type="button" class="btn" id="rcCopy">Copy</button>
+                    <button type="button" class="btn" id="rcSave">${window.fmShareText ? "Share / save" : "Download"}</button>
+                </div>
+                <label class="check-inline" style="margin-top:14px"><input type="checkbox" id="rcKept"> I've saved my recovery code</label>
+            </div>
+            <div class="modal-foot"><button class="btn btn-primary" id="rcDone" disabled>Done</button></div>
+        </div>`, { dismissible: false });
+    const text = "FreshMart Billing recovery code for " + (session ? session.username : "your account") + ": " + code;
+    document.getElementById("rcCopy").onclick = async () => {
+        try { await navigator.clipboard.writeText(code); toast("Code copied", "success"); }
+        catch (e) { toast("Couldn't copy — write the code down instead", "error"); }
+    };
+    document.getElementById("rcSave").onclick = () => {
+        if (window.fmShareText) { window.fmShareText("FreshMart recovery code", text); return; }
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(new Blob([text + "\r\n"], { type: "text/plain" }));
+        a.download = "freshmart-recovery-code.txt";
+        document.body.appendChild(a); a.click(); a.remove();
+    };
+    document.getElementById("rcKept").onchange = e => { document.getElementById("rcDone").disabled = !e.target.checked; };
+    document.getElementById("rcDone").onclick = () => {
+        if (session) session.hasRecoveryCode = true;
+        closeModal();
+        if (currentView === "settings") renderSettings();
+    };
+}
+
+/** Settings: create a (new) recovery code - asks for the current password first. */
+function createRecoveryCode() {
+    openModal(`
+        <div class="modal" style="max-width:400px">
+            <div class="modal-head"><h3>${session.hasRecoveryCode ? "New recovery code" : "Create a recovery code"}</h3><button class="modal-close" id="mClose">×</button></div>
+            <div class="modal-body">
+                ${session.hasRecoveryCode ? `<p class="mini-sub" style="margin:0 0 12px">Your current code will stop working.</p>` : ""}
+                <div class="field"><label for="rcCurrent">Your current password</label>
+                    <input class="input" id="rcCurrent" type="password" autocomplete="current-password"></div>
+            </div>
+            <div class="modal-foot"><button class="btn" id="mCancel">Cancel</button><button class="btn btn-primary" id="mSave">Continue</button></div>
+        </div>`);
+    document.getElementById("mClose").onclick = closeModal;
+    document.getElementById("mCancel").onclick = closeModal;
+    document.getElementById("rcCurrent").focus();
+    document.getElementById("mSave").onclick = () => withBusy(document.getElementById("mSave"), "Creating…", async () => {
+        const currentPassword = document.getElementById("rcCurrent").value;
+        if (!showFieldErrors(currentPassword ? [] : [["rcCurrent", "Enter your password"]])) return;
+        try {
+            const data = await api.post("/api/auth/recovery-code", { currentPassword });
+            closeModal();
+            showRecoveryCode(data.recoveryCode);
+        } catch (e) {
+            if (/password/i.test(e.message)) showFieldErrors([["rcCurrent", e.message]]);
+            else toast(e.message, "error");
+        }
+    });
+}
+
+/** Admin -> Users: a readable temporary password the owner can tell a staff member. */
+function temporaryPassword() {
+    const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+    const bytes = crypto.getRandomValues(new Uint8Array(10));
+    return Array.from(bytes, b => alphabet[b % alphabet.length]).join("");
 }
 
 async function doLogout() {
@@ -399,7 +721,8 @@ function openChangePasswordModal(forced) {
                 ${forced ? "" : `<button class="modal-close" id="mClose">×</button>`}</div>
             <div class="modal-body">
                 ${forced
-                    ? `<p class="mini-sub" style="margin:0 0 14px">This is a new account — choose a password only you know.</p>`
+                    ? `<p class="mini-sub" style="margin:0 0 14px">This is a new account — choose a password only you know.
+                        You'll sign in as <b>${esc(session.username)}</b>.</p>`
                     : `<div class="field"><label for="cpCurrent">Current Password</label><input class="input" id="cpCurrent" type="password"></div>`}
                 <div class="field"><label for="cpNew">New Password</label>
                     <input class="input" id="cpNew" type="password" placeholder="At least 6 characters"></div>
@@ -417,8 +740,11 @@ function openChangePasswordModal(forced) {
     document.getElementById("mSave").onclick = () => withBusy(document.getElementById("mSave"), "Saving…", async () => {
         const newPassword = document.getElementById("cpNew").value;
         const confirmValue = document.getElementById("cpConfirm").value;
-        if (newPassword.length < 6) { toast("New password must be at least 6 characters", "error"); return; }
-        if (newPassword !== confirmValue) { toast("Passwords do not match", "error"); return; }
+        const errors = [];
+        if (!forced && !document.getElementById("cpCurrent").value) errors.push(["cpCurrent", "Enter your current password"]);
+        if (newPassword.length < 6) errors.push(["cpNew", "Must be at least 6 characters"]);
+        else if (newPassword !== confirmValue) errors.push(["cpConfirm", "Passwords do not match"]);
+        if (!showFieldErrors(errors)) return;
         const body = { newPassword };
         if (!forced) body.currentPassword = document.getElementById("cpCurrent").value;
         try {
@@ -426,7 +752,17 @@ function openChangePasswordModal(forced) {
             closeModal();
             renderUserBox();
             toast("Password updated", "success");
-        } catch (e) { toast(e.message, "error"); }
+        } catch (e) { toast(e.message, "error"); return; }
+        // First sign-in skipped bootApp (see enterApp) - load the app now that the server allows it.
+        if (forced) await bootApp();
+        rememberAccount(session);
+        if (forced && session.role === "ADMIN" && !session.hasRecoveryCode) {
+            try {
+                const data = await api.post("/api/auth/recovery-code", { currentPassword: newPassword });
+                showRecoveryCode(data.recoveryCode, "Save your recovery code",
+                    "Your password is set. If you ever forget it, this code lets you reset it.");
+            } catch (e) { /* can be created later from Settings */ }
+        }
     });
 }
 
@@ -437,10 +773,22 @@ function applyRoleVisibility() {
 }
 
 function renderUserBox() {
+    // Admins aren't tied to a branch - show the one they're currently viewing instead of a
+    // fixed "All Branches" that contradicts the switcher once a branch is picked.
+    const viewing = session.role === "ADMIN" && currentBranchId
+        ? branches.find(b => b.id === currentBranchId) : null;
+    const branchLabel = viewing ? "Viewing " + viewing.name : (session.branchName || "All Branches");
     document.getElementById("userBox").innerHTML = `
         <div class="u-name">${esc(session.fullName || session.username)}</div>
-        <div class="u-branch mini-sub">${esc(session.branchName || "All Branches")}</div>
+        <div class="u-branch mini-sub">${esc(branchLabel)}</div>
         <span class="u-role">${esc(session.role)}</span>`;
+}
+
+/** A long branch name is cut off in the narrow switcher - expose the full name on hover. */
+function syncBranchSwitcherTitle() {
+    const sel = document.getElementById("branchSwitcher");
+    const opt = sel.options[sel.selectedIndex];
+    sel.title = opt ? opt.textContent : "";
 }
 
 function setupBranchSwitcher() {
@@ -454,11 +802,18 @@ function setupBranchSwitcher() {
     const saved = localStorage.getItem("fm_branch") || "all";
     sel.innerHTML = `<option value="all">All Branches</option>` +
         branches.map(b => `<option value="${esc(b.id)}">${esc(b.name)}</option>`).join("");
-    sel.value = branches.some(b => b.id === saved) ? saved : "all";
+    // With a single branch, "All Branches" shows the same figures but blocks billing and
+    // product edits behind a "Pick a branch" step - so start on that one branch instead.
+    sel.value = branches.some(b => b.id === saved) ? saved
+        : branches.length === 1 ? branches[0].id
+        : "all";
     currentBranchId = sel.value === "all" ? null : sel.value;
+    syncBranchSwitcherTitle();
     sel.onchange = () => {
         currentBranchId = sel.value === "all" ? null : sel.value;
         localStorage.setItem("fm_branch", sel.value);
+        syncBranchSwitcherTitle();
+        renderUserBox();
         renderStoreFooter();
         // Re-render only AFTER the new branch's items have loaded. Firing loadItems()
         // without awaiting it let refreshCurrentView() paint the Products/Billing screen
@@ -486,6 +841,8 @@ function wireBranchPicker(onPicked) {
         currentBranchId = sel.value;
         document.getElementById("branchSwitcher").value = sel.value;
         localStorage.setItem("fm_branch", sel.value);
+        syncBranchSwitcherTitle();
+        renderUserBox();
         onPicked();
     };
 }
@@ -923,9 +1280,24 @@ function renderSettings() {
                         ${PAGE_SIZE_CHOICES.map(sz => `<option value="${sz}" ${s.pageSize === sz ? "selected" : ""}>${sz}</option>`).join("")}
                     </select></div>
             </div>
-        </div>`;
+        </div>
+
+        ${session.role === "ADMIN" ? `<div class="card settings-card" style="margin-top:16px">
+            <div class="card-head"><div class="card-title">Password Recovery</div></div>
+            <div class="card-body">
+                <p class="mini-sub" style="margin:0 0 12px">${session.hasRecoveryCode
+                    ? "✓ You have a recovery code. If you forget your password, tap <b>Forgot password?</b> on the sign-in screen and enter it."
+                    : "You don't have a recovery code yet. Create one so you can reset your password if you ever forget it."}</p>
+                <button class="btn ${session.hasRecoveryCode ? "" : "btn-primary"}" id="rcCreateBtn">${session.hasRecoveryCode ? "Create a new recovery code" : "Create recovery code"}</button>
+            </div>
+        </div>` : `<div class="card settings-card" style="margin-top:16px">
+            <div class="card-head"><div class="card-title">Forgot your password?</div></div>
+            <div class="card-body"><p class="mini-sub" style="margin:0">Ask the shop owner to set a temporary password for you under Admin → Users.</p></div>
+        </div>`}`;
 
     wireBucketList();
+    const rcBtn = document.getElementById("rcCreateBtn");
+    if (rcBtn) rcBtn.onclick = createRecoveryCode;
     document.getElementById("resetDash").onclick = () => {
         saveUserSettings({ visible: new Set(DEFAULT_BUCKET_ORDER), order: DEFAULT_BUCKET_ORDER.slice() });
         toast("Dashboard reset to default", "success");
@@ -998,6 +1370,8 @@ function openRestock(id, branchId) {
         const sel = document.getElementById("branchSwitcher");
         if (sel) sel.value = branchId;
         localStorage.setItem("fm_branch", branchId);
+        syncBranchSwitcherTitle();
+        renderUserBox();
     }
     // The restock flow used to open the full Edit Product modal - which meant any stock
     // number typed while cashiers were selling would clobber the live count on save
@@ -1072,7 +1446,7 @@ function openAdjustStockModal(item) {
     document.getElementById("mCancel").onclick = closeModal;
     document.getElementById("mSave").onclick = () => withBusy(document.getElementById("mSave"), "Saving…", async () => {
         const q = qty();
-        if (q <= 0) { toast("Enter a positive quantity", "error"); return; }
+        if (!showFieldErrors(q > 0 ? [] : [["adjQty", "Enter a quantity greater than 0"]])) return;
         const body = {
             branchId: currentBranchId,
             reason: document.getElementById("adjReason").value.trim()
@@ -1121,7 +1495,7 @@ function renderBilling() {
                 <div class="card-body">
                     <div class="barcode-bar">
                         <span class="b-ico">📷</span>
-                        <input id="barcodeInput" placeholder="Scan barcode or type item ID, then press Enter" autocomplete="off">
+                        <input id="barcodeInput" placeholder="Scan barcode or type item ID${items.length ? " (e.g. " + esc(items[0].id) + ")" : ""}, then press Enter" autocomplete="off">
                     </div>
                     <div class="product-grid" id="productGrid"></div>
                 </div>
@@ -1144,8 +1518,11 @@ function renderBilling() {
                                 <div class="field"><label for="payMode">Payment</label>
                                     <select class="input" id="payMode"><option>Cash</option><option>Card</option><option>UPI</option></select></div>
                             </div>
-                            <div class="field"><label for="posState">Place of Supply <span class="mini-sub">— buyer's state (leave blank for local sale)</span></label>
-                                <input class="input" id="posState" maxlength="4" style="text-transform:uppercase" placeholder="e.g. TN, KA (for IGST)"></div>
+                            <div class="field">
+                                <button type="button" class="link-action" id="posToggle" aria-expanded="false" aria-controls="posStateWrap">＋ Selling to another state? (IGST)</button>
+                                <div class="hidden" id="posStateWrap" style="margin-top:8px">
+                                    <label for="posState">Place of Supply <span class="mini-sub">— buyer's state code; leave blank for a local sale</span></label>
+                                    <input class="input input-upper" id="posState" maxlength="4" placeholder="e.g. TN, KA"></div></div>
                             <div class="field"><label for="discount">Discount (${esc(store.currency)})</label>
                                 <input class="input" id="discount" type="number" min="0" step="0.01" value="0"></div>
                             <div class="field" id="cashPaidField"><label for="cashPaid">Cash Tendered (${esc(store.currency)})</label>
@@ -1175,6 +1552,16 @@ function renderBilling() {
     document.getElementById("cashPaid").addEventListener("input", renderTotals);
     document.getElementById("payMode").addEventListener("change", renderTotals);
     document.getElementById("checkoutBtn").addEventListener("click", doCheckout);
+    // Place of Supply only matters for interstate (IGST) sales - most bills are local, so the
+    // field stays folded away and a cashier isn't asked about tax state codes on every sale.
+    document.getElementById("posToggle").addEventListener("click", e => {
+        const wrap = document.getElementById("posStateWrap");
+        const open = wrap.classList.toggle("hidden") === false;
+        e.currentTarget.setAttribute("aria-expanded", String(open));
+        e.currentTarget.textContent = open ? "－ Local sale (no IGST)" : "＋ Selling to another state? (IGST)";
+        const input = document.getElementById("posState");
+        if (open) input.focus(); else input.value = "";
+    });
 
     // Quick cash-tender chips: "Exact" fills the grand total (zero change), each
     // note chip adds that denomination to what's already tendered (so two ₹500s
@@ -1247,7 +1634,7 @@ async function handleBarcodeScan() {
             addToCart(hits[0].id);
             toast(hits[0].name + " added", "success");
         } else {
-            toast("No product matches " + code, "error");
+            toast(`No product with barcode or item ID "${code}" - item IDs are shown on each product card`, "error");
         }
     } catch (e) {
         toast(e.message, "error");
@@ -1273,7 +1660,7 @@ function renderProductGrid(filter) {
         const low = it.stock > 0 && it.stock <= it.reorderLevel;
         return `<div class="product-card ${out ? "out" : ""}" data-id="${esc(it.id)}">
             ${out ? "" : `<button class="pc-add" data-id="${esc(it.id)}" type="button" title="Add ${esc(it.name)} to bill" aria-label="Add ${esc(it.name)} to bill">+</button>`}
-            <div class="pc-cat">${esc(it.category)}</div>
+            <div class="pc-cat"><span class="pc-id">${esc(it.id)}</span> · ${esc(it.category)}</div>
             <div class="pc-name">${esc(it.name)}</div>
             <div class="pc-foot">
                 <span class="pc-price">${money(it.price)}</span>
@@ -1337,7 +1724,7 @@ function renderCart() {
         linesEl.innerHTML = cart.map((l, i) => `
             <div class="cart-line">
                 <div class="cl-info">
-                    <div class="cl-name">${esc(l.name)}</div>
+                    <div class="cl-name" title="${esc(l.name)}">${esc(l.name)}</div>
                     <div class="cl-price">${money(l.price)} × ${fmtQty(l.qty)} ${esc(l.unit)}</div>
                 </div>
                 <div class="stepper">
@@ -1651,7 +2038,7 @@ async function saveProduct(editing, id) {
         reorderLevel: Math.max(0, parseFloat(document.getElementById("fReorder").value) || 0),
         barcode: document.getElementById("fBarcode").value.trim()
     };
-    if (!dto.name) { toast("Product name is required", "error"); return; }
+    if (!showFieldErrors(dto.name ? [] : [["fName", "Product name is required"]])) return;
     try {
         if (editing) await api.put("/api/items/" + encodeURIComponent(id), dto);
         else await api.post("/api/items", dto);
@@ -1941,9 +2328,10 @@ async function openReturnModal(invoiceNo) {
    ============================================================ */
 // Day Report moved to its own top-level nav item (every role gets their own branch's
 // report, not just Admin) - these tabs are the genuinely admin-only management screens.
-const ADMIN_TABS = [["branches", "Branches"], ["users", "Users"], ["audit", "Audit Log"], ["backup", "Backup"]];
+const ADMIN_TABS = [[LOCAL_MODE ? "shop" : "branches", LOCAL_MODE ? "Shop" : "Branches"], ["users", "Users"], ["audit", "Audit Log"], ["backup", "Backup"]];
 
 function renderAdminTab(tab) {
+    if (LOCAL_MODE && tab === "branches") tab = "shop";
     currentAdminTab = tab;
     const view = document.getElementById("view-admin");
     view.innerHTML = `
@@ -1953,7 +2341,8 @@ function renderAdminTab(tab) {
         <div id="adminTabBody"></div>`;
     view.querySelectorAll(".admin-tab").forEach(b => b.onclick = () => renderAdminTab(b.dataset.tab));
     const body = document.getElementById("adminTabBody");
-    if (tab === "branches") renderBranchesTab(body);
+    if (tab === "shop") renderShopTab(body);
+    else if (tab === "branches") renderBranchesTab(body);
     else if (tab === "users") renderUsersTab(body);
     else if (tab === "audit") renderAuditTab(body);
     else if (tab === "backup") renderBackupTab(body);
@@ -1982,6 +2371,56 @@ async function renderBranchesTab(body) {
     document.getElementById("addBranchBtn").onclick = () => openBranchModal(null, list);
     body.querySelectorAll("button[data-edit]").forEach(btn =>
         btn.onclick = () => openBranchModal(list.find(x => x.id === btn.dataset.edit), list));
+}
+
+/** Phone only: the shop's name/address/GSTIN printed on every bill. On the PC these live in
+ *  data/store.properties; a phone has no file to edit, so they are saved through PUT /api/store. */
+async function renderShopTab(body) {
+    body.innerHTML = `<div class="empty-state">Loading…</div>`;
+    let info, list;
+    try { [info, list] = await Promise.all([api.get("/api/store"), api.get("/api/branches")]); }
+    catch (e) { body.innerHTML = `<div class="empty-state">${esc(e.message)}</div>`; return; }
+    const shop = list[0] || {};
+    const field = (id, label, value, hint) => `<div class="field"><label for="${id}">${label}${hint ? ` <span class="mini-sub">— ${hint}</span>` : ""}</label>
+        <input class="input" id="${id}" value="${esc(value || "")}"></div>`;
+    body.innerHTML = `
+        <div class="card settings-card">
+            <div class="card-head"><div class="card-title">Shop Details</div></div>
+            <div class="card-body">
+                <p class="mini-sub" style="margin:0 0 14px">Printed at the top of every invoice and receipt.</p>
+                ${field("shName", "Shop Name *", info.name)}
+                ${field("shAddr1", "Address Line 1", info.addressLine1)}
+                ${field("shAddr2", "Address Line 2", info.addressLine2)}
+                <div class="field-row">
+                    ${field("shPhone", "Phone", info.phone)}
+                    ${field("shEmail", "Email", info.email)}
+                </div>
+                <div class="field-row">
+                    ${field("shGstin", "GSTIN", info.gstin)}
+                    ${field("shState", "State Code", shop.stateCode, "for IGST on interstate bills")}
+                </div>
+                ${field("shCurrency", "Currency Label", info.currency, "e.g. Rs.")}
+                <button class="btn btn-primary" id="shSave">Save Shop Details</button>
+            </div>
+        </div>`;
+    document.getElementById("shState").classList.add("input-upper");
+    document.getElementById("shSave").onclick = () => withBusy(document.getElementById("shSave"), "Saving…", async () => {
+        const val = id => document.getElementById(id).value.trim();
+        const dto = {
+            name: val("shName"), addressLine1: val("shAddr1"), addressLine2: val("shAddr2"), phone: val("shPhone"),
+            email: val("shEmail"), gstin: val("shGstin"), stateCode: val("shState"), currency: val("shCurrency")
+        };
+        if (!showFieldErrorsIn(body, dto.name ? [] : [["shName", "Shop name is required"]])) return;
+        try {
+            store = await api.put("/api/store", dto);
+            branches = await api.get("/api/branches");
+            document.getElementById("brandName").textContent = (store.name || "FreshMart").split(" ")[0];
+            setupBranchSwitcher();
+            renderUserBox();
+            renderStoreFooter();
+            toast("Shop details saved", "success");
+        } catch (e) { toast(e.message, "error"); }
+    });
 }
 
 function openBranchModal(branch, allBranches) {
@@ -2029,7 +2468,7 @@ function openBranchModal(branch, allBranches) {
             gstin: document.getElementById("fbGstin").value.trim(),
             stateCode: document.getElementById("fbStateCode").value.trim().toUpperCase()
         };
-        if (!dto.name) { toast("Branch name is required", "error"); return; }
+        if (!showFieldErrors(dto.name ? [] : [["fbName", "Branch name is required"]])) return;
         try {
             if (editing) {
                 dto.active = document.getElementById("fbActive").value === "true";
@@ -2083,15 +2522,17 @@ function openUserModal(user) {
                 <div class="field"><label for="fuFullName">Full Name</label><input class="input" id="fuFullName" value="${editing ? esc(user.fullName) : ""}"></div>
                 <div class="field-row">
                     <div class="field"><label for="fuRole">Role</label>
-                        <select class="input" id="fuRole">${roles.map(r => `<option ${editing && user.role === r ? "selected" : ""}>${r}</option>`).join("")}</select></div>
+                        <select class="input" id="fuRole">${roles.map(r => `<option ${(editing ? user.role === r : r === "CASHIER") ? "selected" : ""}>${r}</option>`).join("")}</select></div>
                     <div class="field"><label for="fuBranch">Branch <span class="mini-sub">(not needed for Admin)</span></label>
                         <select class="input" id="fuBranch">
                             <option value="">—</option>
-                            ${branches.map(b => `<option value="${esc(b.id)}" ${editing && user.branchId === b.id ? "selected" : ""}>${esc(b.name)}</option>`).join("")}
+                            ${branches.map(b => `<option value="${esc(b.id)}" ${(editing ? user.branchId === b.id : b.id === (currentBranchId || (branches.length === 1 ? b.id : ""))) ? "selected" : ""}>${esc(b.name)}</option>`).join("")}
                         </select></div>
                 </div>
                 <div class="field"><label for="fuPassword">${editing ? "Reset Password" : "Password *"}</label>
-                    <input class="input" id="fuPassword" type="password" placeholder="${editing ? "Leave blank to keep current password" : "At least 6 characters"}"></div>
+                    <input class="input" id="fuPassword" type="password" placeholder="${editing ? "Leave blank to keep current password" : "At least 6 characters"}">
+                    <div class="login-link-row" style="justify-content:flex-start"><button type="button" class="link-action" id="fuGenerate">Generate temporary password</button></div>
+                    <div class="mini-sub hidden" id="fuGenHint" style="margin-top:4px">Tell them this password. They'll choose their own the first time they sign in.</div></div>
                 ${editing ? `<div class="field"><label for="fuActive">Status</label>
                     <select class="input" id="fuActive">
                         <option value="true" ${user.active ? "selected" : ""}>Active</option>
@@ -2105,6 +2546,13 @@ function openUserModal(user) {
         </div>`);
     document.getElementById("mClose").onclick = closeModal;
     document.getElementById("mCancel").onclick = closeModal;
+    document.getElementById("fuGenerate").onclick = () => {
+        const f = document.getElementById("fuPassword");
+        f.value = temporaryPassword();
+        f.type = "text";
+        f.dispatchEvent(new Event("input", { bubbles: true }));
+        document.getElementById("fuGenHint").classList.remove("hidden");
+    };
     document.getElementById("mSave").onclick = () => withBusy(document.getElementById("mSave"), "Saving…", async () => {
         const dto = {
             username: editing ? user.username : document.getElementById("fuUsername").value.trim(),
@@ -2114,8 +2562,10 @@ function openUserModal(user) {
             password: document.getElementById("fuPassword").value,
             active: editing ? document.getElementById("fuActive").value === "true" : true
         };
-        if (!dto.username) { toast("Username is required", "error"); return; }
-        if (!editing && dto.password.length < 6) { toast("Password must be at least 6 characters", "error"); return; }
+        const errors = [];
+        if (!dto.username) errors.push(["fuUsername", "Username is required"]);
+        if (!editing && dto.password.length < 6) errors.push(["fuPassword", "Must be at least 6 characters"]);
+        if (!showFieldErrors(errors)) return;
         try {
             if (editing) await api.put("/api/users/" + encodeURIComponent(user.username), dto);
             else await api.post("/api/users", dto);
@@ -2400,18 +2850,26 @@ function renderBackupTab(body) {
         <div class="card settings-card">
             <div class="card-head"><div class="card-title">Data Backup</div></div>
             <div class="card-body">
-                <p class="mini-sub" style="margin:0 0 14px">Everything lives in a single SQLite file at <code>data/freshmart.db</code>.
+                ${LOCAL_MODE
+                    ? `<p class="mini-sub" style="margin:0 0 14px">All your bills, products and accounts are stored <b>only on this phone</b>.
+                        If the phone is lost, reset or the app is uninstalled, they are gone — so save a backup regularly
+                        (send it to Google Drive, email or WhatsApp). The same backup file also restores into the PC version.</p>`
+                    : `<p class="mini-sub" style="margin:0 0 14px">Everything lives in a single SQLite file at <code>data/freshmart.db</code>.
                     Download a zip any time. The app also keeps a dated copy under <code>data/backups/</code>
-                    automatically — now <b>every day the server is running</b>, not just the day it started.</p>
-                <button class="btn btn-primary" id="downloadBackupBtn">⬇ Download Backup (.zip)</button>
+                    automatically — now <b>every day the server is running</b>, not just the day it started.</p>`}
+                <button class="btn btn-primary" id="downloadBackupBtn">${LOCAL_MODE ? "⬆ Save / Share Backup (.zip)" : "⬇ Download Backup (.zip)"}</button>
             </div>
         </div>
         <div class="card settings-card" style="margin-top:16px">
             <div class="card-head"><div class="card-title">Restore from Backup</div></div>
             <div class="card-body">
-                <p class="mini-sub" style="margin:0 0 14px">Replace <b>all current data</b> with a backup zip you
+                ${LOCAL_MODE
+                    ? `<p class="mini-sub" style="margin:0 0 14px">Replace <b>all data on this phone</b> with a backup zip — from this
+                        phone or from the PC version. It takes effect straight away, and you then sign in with an account from
+                        that backup.</p>`
+                    : `<p class="mini-sub" style="margin:0 0 14px">Replace <b>all current data</b> with a backup zip you
                     downloaded earlier. For safety the restore is <b>staged</b> and takes effect the next time the app
-                    starts; your current data is copied to <code>data/backups/pre-restore-…</code> first.</p>
+                    starts; your current data is copied to <code>data/backups/pre-restore-…</code> first.</p>`}
                 <div class="field" style="max-width:420px">
                     <input class="input" id="restoreFile" type="file" accept=".zip,application/zip">
                 </div>
@@ -2425,9 +2883,11 @@ function renderBackupTab(body) {
         if (!file) { toast("Choose a backup .zip first", "error"); return; }
         confirmAction({
             title: "Restore from backup?",
-            message: `This will replace <b>all current data</b> with <b>${esc(file.name)}</b> when the app next starts.
+            message: LOCAL_MODE
+                ? `This will replace <b>all data on this phone</b> with <b>${esc(file.name)}</b> right now. Continue?`
+                : `This will replace <b>all current data</b> with <b>${esc(file.name)}</b> when the app next starts.
                 Your current data is saved to a pre-restore folder first. Continue?`,
-            confirmLabel: "Stage Restore",
+            confirmLabel: LOCAL_MODE ? "Restore Now" : "Stage Restore",
             busyLabel: "Uploading…",
             onConfirm: async () => {
                 const buf = await file.arrayBuffer();
@@ -2441,11 +2901,13 @@ function renderBackupTab(body) {
                 closeModal();
                 openModal(`
                     <div class="modal" style="max-width:420px">
-                        <div class="modal-head"><h3>Restore staged</h3></div>
+                        <div class="modal-head"><h3>${data.restored ? "Backup restored" : "Restore staged"}</h3></div>
                         <div class="modal-body"><p class="mini-sub" style="margin:0">${esc(data.message || "Restart the app to complete the restore.")}</p></div>
                         <div class="modal-foot"><button class="btn btn-primary" id="restoreOkBtn">Got it</button></div>
                     </div>`);
-                document.getElementById("restoreOkBtn").onclick = closeModal;
+                // The phone applies a restore immediately, and the restored data has its own accounts -
+                // reload into its sign-in screen.
+                document.getElementById("restoreOkBtn").onclick = data.restored ? () => location.reload() : closeModal;
             }
         });
     };
@@ -2519,8 +2981,8 @@ async function bootApp() {
     // The full branch list (address/phone/GSTIN of every branch) is admin-only server-side;
     // Manager/Cashier already know their own branch from /api/auth/me and never need this.
     try { branches = session.role === "ADMIN" ? await api.get("/api/branches") : []; } catch (e) { branches = []; }
-    renderUserBox();
     setupBranchSwitcher();
+    renderUserBox();
     // Render the footer AFTER the branch is known, so the address block reflects the
     // active branch (admin's saved pick or the non-admin's own branch) instead of the
     // store-wide default.
@@ -2540,6 +3002,10 @@ async function init() {
     document.querySelectorAll(".nav-item").forEach(b =>
         b.addEventListener("click", () => switchView(b.dataset.view)));
     document.getElementById("loginForm").addEventListener("submit", doLogin);
+    document.getElementById("forgotUserBtn").addEventListener("click", forgotUsername);
+    document.getElementById("forgotPwBtn").addEventListener("click", forgotPassword);
+    document.getElementById("loginChip").addEventListener("click", () =>
+        openAccountPicker("Switch account", acc => { setLoginAccount(acc); if (!acc) document.getElementById("loginUsername").focus(); }));
     const pwToggle = document.getElementById("loginPwToggle");
     pwToggle.addEventListener("click", () => {
         const inp = document.getElementById("loginPassword");
@@ -2566,11 +3032,8 @@ async function init() {
 
     try {
         session = await api.get("/api/auth/me");
-        showApp();
-        await bootApp();
-        if (session.mustChangePassword) {
-            openChangePasswordModal(true);
-        }
+        rememberAccount(session);
+        await enterApp();
     } catch (e) {
         showLogin();
         try {

@@ -21,8 +21,8 @@ import grocery.web.Http;
  */
 public class AuthFilter extends Filter {
 
-    private static final List<String> PUBLIC_GET = List.of("/store");
-    private static final List<String> PUBLIC_POST = List.of("/auth/login");
+    private static final List<String> PUBLIC_GET = List.of("/store", "/auth/accounts");
+    private static final List<String> PUBLIC_POST = List.of("/auth/login", "/auth/recover");
 
     private final SessionManager sessions;
     private final UserService users;

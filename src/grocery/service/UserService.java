@@ -99,7 +99,7 @@ public class UserService {
 
     private void insert(User u) {
         db.update("INSERT INTO users(username, passwordHash, fullName, role, branchId, active, " +
-                "mustChangePassword) VALUES(?,?,?,?,?,?,?)", ps -> {
+                "mustChangePassword, recoveryHash) VALUES(?,?,?,?,?,?,?,?)", ps -> {
             ps.setString(1, u.getUsername());
             ps.setString(2, u.getPasswordHash());
             ps.setString(3, u.getFullName());
@@ -107,19 +107,21 @@ public class UserService {
             ps.setString(5, u.getBranchId());
             ps.setInt(6, u.isActive() ? 1 : 0);
             ps.setInt(7, u.isMustChangePassword() ? 1 : 0);
+            ps.setString(8, u.getRecoveryHash());
         });
     }
 
     private void updateRow(User u) {
         db.update("UPDATE users SET passwordHash=?, fullName=?, role=?, branchId=?, active=?, " +
-                "mustChangePassword=? WHERE username=?", ps -> {
+                "mustChangePassword=?, recoveryHash=? WHERE username=?", ps -> {
             ps.setString(1, u.getPasswordHash());
             ps.setString(2, u.getFullName());
             ps.setString(3, u.getRole().name());
             ps.setString(4, u.getBranchId());
             ps.setInt(5, u.isActive() ? 1 : 0);
             ps.setInt(6, u.isMustChangePassword() ? 1 : 0);
-            ps.setString(7, u.getUsername());
+            ps.setString(7, u.getRecoveryHash());
+            ps.setString(8, u.getUsername());
         });
     }
 
@@ -128,9 +130,11 @@ public class UserService {
     }
 
     private static User mapRow(ResultSet rs) throws SQLException {
-        return new User(rs.getString("username"), rs.getString("passwordHash"), rs.getString("fullName"),
+        User u = new User(rs.getString("username"), rs.getString("passwordHash"), rs.getString("fullName"),
                 Role.parse(rs.getString("role")), rs.getString("branchId"), rs.getInt("active") != 0,
                 rs.getInt("mustChangePassword") != 0);
+        u.setRecoveryHash(rs.getString("recoveryHash"));
+        return u;
     }
 
     // ---------------- legacy CSV parsing (one-time SQLite migration only) ----------------

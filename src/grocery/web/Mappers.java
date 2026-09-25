@@ -91,6 +91,7 @@ public final class Mappers {
             }
         }
         d.mustChangePassword = u.isMustChangePassword();
+        d.hasRecoveryCode = u.getRecoveryHash() != null;
         return d;
     }
 

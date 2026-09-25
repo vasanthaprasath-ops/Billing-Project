@@ -1,0 +1,25 @@
+{
+  "name": "freshmart-mobile",
+  "version": "1.0.0",
+  "private": true,
+  "description": "FreshMart Billing as a standalone Android app: the shared web UI plus an on-device backend (SQLite via sql.js), packaged with Capacitor.",
+  "scripts": {
+    "build": "node build.mjs",
+    "sync": "node build.mjs && npx cap sync android",
+    "test:diff": "node test/diff-java.mjs"
+  },
+  "dependencies": {
+    "@capacitor-mlkit/barcode-scanning": "^8.2.1",
+    "@capacitor/android": "^8.5.2",
+    "@capacitor/app": "^8.1.1",
+    "@capacitor/core": "^8.5.2",
+    "@capacitor/filesystem": "^8.1.3",
+    "@capacitor/haptics": "^8.0.2",
+    "@capacitor/share": "^8.0.2",
+    "@capgo/capacitor-native-biometric": "^8.6.11",
+    "sql.js": "^1.14.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.2"
+  }
+}
