@@ -80,6 +80,14 @@ public class ApiHandler implements HttpHandler {
             handleLogin(ex);
             return;
         }
+        if (sub.equals("/auth/accounts") && method.equals("GET")) {
+            handleListAccounts(ex);
+            return;
+        }
+        if (sub.equals("/auth/recover") && method.equals("POST")) {
+            handleRecover(ex);
+            return;
+        }
 
         User user = (User) ex.getAttribute("user");
         if (user == null) {
@@ -102,6 +110,8 @@ public class ApiHandler implements HttpHandler {
             handleLogout(ex, user);
         } else if (sub.equals("/auth/change-password") && method.equals("POST")) {
             handleChangePassword(ex, user);
+        } else if (sub.equals("/auth/recovery-code") && method.equals("POST")) {
+            handleNewRecoveryCode(ex, user);
         } else if (sub.equals("/branches") && method.equals("GET")) {
             handleListBranches(ex, user);
         } else if (sub.equals("/branches") && method.equals("POST")) {
@@ -228,6 +238,91 @@ public class ApiHandler implements HttpHandler {
         Http.setCookie(ex, "sid", session.token, 12 * 3600);
         ctx.auditLog().log(user, "PASSWORD_CHANGE", "");
         Http.sendJson(ex, 200, Mappers.session(user, ctx.branches()));
+    }
+
+    /**
+     * "Forgot username?": the shop's active accounts (name, username, role) for the sign-in
+     * screen's account picker. Public by design - a small shop's staff pick their tile, then type
+     * the password. No password material, branch or status detail is exposed.
+     */
+    private void handleListAccounts(HttpExchange ex) throws IOException {
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (User u : ctx.users().getAll()) {
+            if (!u.isActive()) {
+                continue;
+            }
+            Map<String, Object> a = new LinkedHashMap<>();
+            a.put("username", u.getUsername());
+            a.put("fullName", u.getFullName());
+            a.put("role", u.getRole().name());
+            out.add(a);
+        }
+        Http.sendJson(ex, 200, out);
+    }
+
+    /**
+     * "Forgot password?" for an admin: the one-time recovery code (shown when they first set their
+     * password) proves ownership. Throttled exactly like sign-in. On success the code is used up and
+     * a fresh one is issued and returned, and the caller is signed in.
+     */
+    private void handleRecover(HttpExchange ex) throws IOException {
+        Dtos.RecoverRequestDto req = Json.fromJson(Http.readBody(ex), Dtos.RecoverRequestDto.class);
+        if (req == null || req.username == null || req.recoveryCode == null) {
+            throw new IllegalArgumentException("Username and recovery code are required.");
+        }
+        if (req.newPassword == null || req.newPassword.length() < 6) {
+            throw new IllegalArgumentException("New password must be at least 6 characters.");
+        }
+        String ip = Http.remoteIp(ex);
+        java.time.Duration ipWait = ctx.loginRateLimiter().ipLockoutRemaining(ip);
+        java.time.Duration wait = ctx.loginRateLimiter().lockoutRemaining(req.username);
+        java.time.Duration longest = ipWait.compareTo(wait) >= 0 ? ipWait : wait;
+        if (!longest.isZero()) {
+            throw new ApiException(429, "Too many failed attempts. Try again in about "
+                    + Math.max(1, longest.toMinutes()) + " minute(s).");
+        }
+        User user = ctx.users().findByUsername(req.username);
+        String code = PasswordHasher.normalizeRecoveryCode(req.recoveryCode);
+        boolean ok = user != null && user.isActive() && user.getRole() == Role.ADMIN
+                && user.getRecoveryHash() != null && PasswordHasher.verify(code, user.getRecoveryHash());
+        if (!ok) {
+            if (user == null || user.getRecoveryHash() == null) {
+                PasswordHasher.warmUp(code); // same cost as a real check - no username probing by timing
+            }
+            ctx.loginRateLimiter().recordFailure(req.username, ip);
+            ctx.auditLog().logSystem("RECOVERY_FAILED", "username=" + req.username + " ip=" + ip);
+            throw new ApiException(401, "That recovery code doesn't match this account.");
+        }
+        ctx.loginRateLimiter().recordSuccess(user.getUsername());
+        String nextCode = PasswordHasher.randomRecoveryCode();
+        user.setPasswordHash(PasswordHasher.hash(req.newPassword));
+        user.setMustChangePassword(false);
+        user.setRecoveryHash(PasswordHasher.hash(PasswordHasher.normalizeRecoveryCode(nextCode)));
+        ctx.users().update(user);
+        ctx.sessions().invalidateAllFor(user.getUsername());
+        Session session = ctx.sessions().create(user.getUsername());
+        Http.setCookie(ex, "sid", session.token, 12 * 3600);
+        ctx.auditLog().log(user, "PASSWORD_RECOVERED", "recovery code");
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("session", Mappers.session(user, ctx.branches()));
+        body.put("recoveryCode", nextCode);
+        Http.sendJson(ex, 200, body);
+    }
+
+    /** A new recovery code for the signed-in admin (the previous one stops working). */
+    private void handleNewRecoveryCode(HttpExchange ex, User user) throws IOException {
+        requireRole(user, Role.ADMIN);
+        Dtos.ChangePasswordDto req = Json.fromJson(Http.readBody(ex), Dtos.ChangePasswordDto.class);
+        if (req == null || req.currentPassword == null || !PasswordHasher.verify(req.currentPassword, user.getPasswordHash())) {
+            throw new IllegalArgumentException("Current password is incorrect.");
+        }
+        String code = PasswordHasher.randomRecoveryCode();
+        user.setRecoveryHash(PasswordHasher.hash(PasswordHasher.normalizeRecoveryCode(code)));
+        ctx.users().update(user);
+        ctx.auditLog().log(user, "RECOVERY_CODE_CREATED", "");
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("recoveryCode", code);
+        Http.sendJson(ex, 200, body);
     }
 
     // ---------------- branches ----------------

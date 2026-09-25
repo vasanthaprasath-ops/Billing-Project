@@ -12,14 +12,21 @@
     <form class="login-card" id="loginForm">
         <div class="brand-logo login-logo">🛒</div>
         <h1 id="loginStoreName">FreshMart</h1>
-        <div class="login-sub">Sign in to continue</div>
-        <div class="field"><label for="loginUsername">Username</label>
-            <input class="input" id="loginUsername" autocomplete="username" autofocus></div>
+        <div class="login-sub" id="loginSub">Sign in to continue</div>
+        <button type="button" class="account-chip hidden" id="loginChip" aria-label="Switch account">
+            <span class="acct-avatar" id="loginChipAvatar"></span>
+            <span class="acct-text"><span class="acct-name" id="loginChipName"></span><span class="acct-user" id="loginChipUser"></span></span>
+            <span class="acct-switch">Switch</span>
+        </button>
+        <div class="field" id="loginUserField"><label for="loginUsername">Username</label>
+            <input class="input" id="loginUsername" autocomplete="username" autocapitalize="none" spellcheck="false" autofocus>
+            <div class="login-link-row"><button type="button" class="link-action" id="forgotUserBtn">Forgot username?</button></div></div>
         <div class="field"><label for="loginPassword">Password</label>
             <div class="pw-wrap">
                 <input class="input" id="loginPassword" type="password" autocomplete="current-password">
                 <button type="button" class="pw-toggle" id="loginPwToggle" aria-label="Show password" aria-pressed="false">Show</button>
-            </div></div>
+            </div>
+            <div class="login-link-row"><button type="button" class="link-action" id="forgotPwBtn">Forgot password?</button></div></div>
         <div id="loginError" class="login-error hidden" role="alert"></div>
         <button class="btn btn-primary btn-block btn-lg" type="submit" id="loginSubmit">Sign In</button>
     </form>

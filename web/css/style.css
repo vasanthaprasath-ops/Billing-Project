@@ -686,7 +686,7 @@ tr.tbl-group-row td {
     position: fixed; inset: 0;
     background: rgba(15, 23, 42, .45);
     display: grid; place-items: center;
-    padding: 20px; z-index: 50;
+    padding: 20px; z-index: 150;   /* above the sign-in screen (100): Forgot password / username dialogs open there */
     animation: fade .15s ease;
 }
 .modal {
@@ -714,7 +714,7 @@ tr.tbl-group-row td {
    Checkout button, so an error covered the very button the cashier needed next. */
 .toast-root {
     position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
-    display: flex; flex-direction: column; align-items: center; gap: 10px; z-index: 60;
+    display: flex; flex-direction: column; align-items: center; gap: 10px; z-index: 160;
     max-width: calc(100vw - 32px);
 }
 .toast {
@@ -1135,3 +1135,35 @@ tr.tbl-group-row td {
 :root[data-theme="dark"] .pc-stock.low { background: #3a2b0f; color: #fcd34d; }
 :root[data-theme="dark"] .pc-add { background: #14532d; color: #86efac; }
 :root[data-theme="dark"] .pc-price { color: #86efac; }
+
+/* ---------------- Sign-in: remembered account, account picker, recovery code ---------------- */
+.login-link-row { display: flex; justify-content: flex-end; margin-top: 6px; }
+.login-link-row .link-action { font-size: 13px; padding: 4px 0; }
+.account-chip {
+    display: flex; align-items: center; gap: 12px; width: 100%; margin: 4px 0 16px; padding: 8px 14px 8px 8px;
+    border: 1px solid var(--border); border-radius: 999px; background: var(--card); color: var(--ink);
+    cursor: pointer; font: inherit; text-align: left;
+}
+.account-chip:hover { border-color: var(--muted-2); }
+.acct-avatar {
+    width: 40px; height: 40px; border-radius: 50%; flex-shrink: 0; display: grid; place-items: center;
+    background: var(--green); color: #fff; font-weight: 700; font-size: 17px;
+}
+.acct-avatar-plain { background: var(--green-soft); color: var(--green-dark); font-size: 18px; }
+.acct-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.acct-name { font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.acct-user { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.acct-switch { font-size: 13px; font-weight: 600; color: var(--green-dark); }
+.acct-list { display: flex; flex-direction: column; gap: 4px; }
+.acct-row {
+    display: flex; align-items: center; gap: 14px; width: 100%; padding: 10px 12px; border: 0; border-radius: 12px;
+    background: transparent; color: var(--ink); cursor: pointer; font: inherit; text-align: left;
+}
+.acct-row:hover { background: var(--bg); }
+.rc-code {
+    font: 700 22px/1.3 ui-monospace, "Roboto Mono", Consolas, monospace; letter-spacing: 2px; text-align: center;
+    padding: 16px 8px; border-radius: 12px; background: var(--green-soft); color: var(--green-deep); user-select: all;
+    word-break: break-all;
+}
+.rc-actions { display: flex; gap: 8px; justify-content: center; margin-top: 12px; }
+.rc-input { font-family: ui-monospace, "Roboto Mono", Consolas, monospace; letter-spacing: 1.5px; }

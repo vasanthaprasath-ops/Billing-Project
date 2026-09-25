@@ -189,6 +189,21 @@ To stop the server, press **Ctrl+C** in its terminal window.
 6. **Admin** (Admin accounts only) — manage branches, users, review the audit log, run the
    day-end Z-report, and download a backup.
 
+### Forgot your password or username?
+
+- **Username:** the sign-in screen remembers who signed in last on that device. Tap the account
+  chip (or **Forgot username?**) to pick your name from the shop's accounts.
+- **Owner / admin password:** when you first set your password the app shows a one-time
+  **recovery code** — save it somewhere safe. On the sign-in screen tap **Forgot password?**, enter
+  the code and choose a new password (you get a fresh code; the old one stops working). On the
+  Android app you can also confirm with the **phone's fingerprint, face or PIN** instead. A new
+  code can be created any time under **Settings → Password Recovery**.
+- **Lost the code too (PC version):** stop FreshMart and run `run.bat --reset-password admin`
+  (or `./run.sh --reset-password admin`). It prints a temporary password; sign in with it and
+  choose a new one.
+- **Staff password:** the owner opens **Admin → Users → Edit**, taps **Generate temporary
+  password** and tells them; they choose their own at the next sign-in.
+
 ---
 
 ## Customising your store

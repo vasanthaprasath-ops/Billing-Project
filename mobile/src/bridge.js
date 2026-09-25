@@ -21,6 +21,7 @@
     const Filesystem = plugin("Filesystem");
     const Share = plugin("Share");
     const App = plugin("App");
+    const Biometric = plugin("NativeBiometric");
 
     // ---------------- storage: IndexedDB (survives app restarts and updates) ----------------
 
@@ -234,6 +235,40 @@
             notify(e.message || String(e), "error");
         }
     }
+
+    // ---------------- "Forgot password?" with the phone's own screen lock ----------------
+    // The owner proves it's them with the phone's fingerprint / face / PIN; only then does the
+    // local backend accept the new password (backend.deviceReset - not reachable through /api).
+    if (Biometric) {
+        window.fmDevice = {
+            async available() {
+                try {
+                    const r = await Biometric.isAvailable({ useFallback: true });
+                    return !!(r && (r.isAvailable || r.deviceIsSecure));
+                } catch (e) { return false; }
+            },
+            async resetPassword(username, newPassword) {
+                try {
+                    await Biometric.verifyIdentity({
+                        title: "Verify it's you", subtitle: "Reset the FreshMart password for " + username,
+                        description: "Use your fingerprint, face or phone PIN",
+                        allowedBiometryTypes: [3, 4, 7],   // fingerprint, face, device PIN/pattern
+                        maxAttempts: 5,
+                    });
+                } catch (e) {
+                    throw new Error("cancelled");      // backed out or failed - nothing changed
+                }
+                const backend = await ready;
+                const r = await backend.deviceReset(username, newPassword);
+                setSid(r.sid);
+                writeLS(SESSIONS_KEY, JSON.stringify(backend.sessionsSnapshot()));
+                const changes = backend.takeChanges();
+                if (changes) await save(changes);
+                return r.session;
+            },
+        };
+    }
+    if (Share) window.fmShareText = (title, text) => Share.share({ title, text, dialogTitle: title }).catch(() => {});
 
     // ---------------- Android back button ----------------
 

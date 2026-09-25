@@ -582,3 +582,16 @@ table.tbl tbody tr:not(.tbl-group-row):hover { background: color-mix(in srgb, va
 .fm-scan-field .fm-scan-btn { width: 44px; height: 44px; background: var(--md-secondary-container); color: var(--md-on-secondary-container); box-shadow: none; }
 .barcode-bar:has(.fm-scan-btn) .b-ico { display: none; }
 .barcode-bar:has(.fm-scan-btn) { padding-left: 20px; }
+
+/* sign-in + recovery (Material 3) */
+.account-chip { border-color: var(--md-outline-variant); background: transparent; min-height: 56px; }
+.acct-avatar { background: var(--md-primary); color: var(--md-on-primary); font-weight: 500; }
+.acct-avatar-plain { background: var(--md-secondary-container); color: var(--md-on-secondary-container); }
+.acct-switch { color: var(--md-primary); font-weight: 500; }
+.acct-name { font-weight: 500; }
+.acct-row { min-height: 64px; border-radius: 16px; position: relative; overflow: hidden; }
+.acct-row:active { background: color-mix(in srgb, var(--md-on-surface) 10%, transparent); }
+.rc-code { background: var(--md-primary-container); color: var(--md-on-primary-container); border-radius: 16px; font-weight: 500; }
+.login-card .login-link-row .link-action { min-height: 40px; }
+.login-logo { color: var(--md-on-primary-container); }
+.login-logo .m3-icon { width: 32px; height: 32px; }

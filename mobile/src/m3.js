@@ -38,6 +38,9 @@
         if (ico && VIEW_ICONS[b.dataset.view]) ico.innerHTML = icon(VIEW_ICONS[b.dataset.view]);
     });
 
+    const loginLogo = document.querySelector(".login-logo");
+    if (loginLogo) loginLogo.innerHTML = icon("storefront", true);
+
     // ---------------- bottom navigation + More sheet ----------------
     let navbar = null, navKey = "";
     function visibleViews() {

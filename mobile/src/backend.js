@@ -331,6 +331,7 @@
             "username TEXT PRIMARY KEY, passwordHash TEXT NOT NULL, fullName TEXT NOT NULL, role TEXT NOT NULL, " +
             "branchId TEXT REFERENCES branches(id), active INTEGER NOT NULL DEFAULT 1, " +
             "mustChangePassword INTEGER NOT NULL DEFAULT 0)");
+        addColumnIfMissing(s, "users", "recoveryHash", "TEXT");
         s.exec("CREATE TABLE IF NOT EXISTS invoices (" +
             "invoiceNo TEXT PRIMARY KEY, branchId TEXT NOT NULL REFERENCES branches(id), cashierUsername TEXT NOT NULL, " +
             "dateTime TEXT NOT NULL, customerName TEXT NOT NULL DEFAULT '', customerPhone TEXT NOT NULL DEFAULT '', " +
@@ -874,6 +875,18 @@
             }
             return out;
         }
+        /** A one-time recovery code like K7QM-3XRT-9WPB-2HDN (PasswordHasher.randomRecoveryCode). */
+        randomRecoveryCode() {
+            const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+            let out = "";
+            while (out.replace(/-/g, "").length < 16) {
+                const b = this.random(1)[0];
+                if (out.length && out.replace(/-/g, "").length % 4 === 0 && !out.endsWith("-")) out += "-";
+                out += alphabet[b % alphabet.length];      // 256 % 32 === 0: no modulo bias
+            }
+            return out;
+        }
+        normalizeRecoveryCode(code) { return code == null ? "" : String(code).toUpperCase().replace(/[^A-Z0-9]/g, ""); }
         randomToken() {
             return b64(this.random(32)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
         }
@@ -886,6 +899,7 @@
             this.users = db.query("SELECT * FROM users").map(r => ({
                 username: r.username, passwordHash: r.passwordHash, fullName: r.fullName, role: parseRole(r.role),
                 branchId: r.branchId == null ? null : r.branchId, active: r.active !== 0, mustChangePassword: r.mustChangePassword !== 0,
+                recoveryHash: r.recoveryHash == null ? null : r.recoveryHash,
             }));
             this.bootstrapPassword = null;
         }
@@ -895,7 +909,7 @@
             const password = this.hasher.randomPassword();
             const admin = {
                 username: "admin", passwordHash: await this.hasher.hash(password), fullName: "Administrator",
-                role: "ADMIN", branchId: null, active: true, mustChangePassword: true,
+                role: "ADMIN", branchId: null, active: true, mustChangePassword: true, recoveryHash: null,
             };
             this.users.push(admin);
             this.insert(admin);
@@ -921,12 +935,12 @@
             const i = this.users.findIndex(x => eqIC(x.username, u.username));
             if (i < 0) throw bad("No user named '" + u.username + "'.");
             this.users[i] = u;
-            this.db.update("UPDATE users SET passwordHash=?, fullName=?, role=?, branchId=?, active=?, mustChangePassword=? WHERE username=?",
-                [u.passwordHash, u.fullName, u.role, u.branchId, u.active ? 1 : 0, u.mustChangePassword ? 1 : 0, u.username]);
+            this.db.update("UPDATE users SET passwordHash=?, fullName=?, role=?, branchId=?, active=?, mustChangePassword=?, recoveryHash=? WHERE username=?",
+                [u.passwordHash, u.fullName, u.role, u.branchId, u.active ? 1 : 0, u.mustChangePassword ? 1 : 0, u.recoveryHash == null ? null : u.recoveryHash, u.username]);
         }
         insert(u) {
-            this.db.update("INSERT INTO users(username, passwordHash, fullName, role, branchId, active, mustChangePassword) VALUES(?,?,?,?,?,?,?)",
-                [u.username, u.passwordHash, u.fullName, u.role, u.branchId, u.active ? 1 : 0, u.mustChangePassword ? 1 : 0]);
+            this.db.update("INSERT INTO users(username, passwordHash, fullName, role, branchId, active, mustChangePassword, recoveryHash) VALUES(?,?,?,?,?,?,?,?)",
+                [u.username, u.passwordHash, u.fullName, u.role, u.branchId, u.active ? 1 : 0, u.mustChangePassword ? 1 : 0, u.recoveryHash == null ? null : u.recoveryHash]);
         }
     }
 
@@ -1091,6 +1105,7 @@
             }
         }
         d.mustChangePassword = u.mustChangePassword;
+        d.hasRecoveryCode = u.recoveryHash != null;
         return d;
     }
     const mapAudit = e => ({
@@ -1203,6 +1218,9 @@
 
             if (sub === "/store" && method === "GET") return this.json(res, 200, mapStore(c));
             if (sub === "/auth/login" && method === "POST") return this.login(res, body());
+            if (sub === "/auth/accounts" && method === "GET") return this.json(res, 200, c.users.getAll().filter(u => u.active)
+                .map(u => ({ username: u.username, fullName: u.fullName, role: u.role })));
+            if (sub === "/auth/recover" && method === "POST") return this.recover(res, body());
 
             const session = c.sessions.resolve(req.sid);
             const user = session ? c.users.findByUsername(session.username) : null;
@@ -1219,6 +1237,7 @@
             if (sub === "/auth/me" && method === "GET") return this.json(res, 200, mapSession(c, user));
             if (sub === "/auth/logout" && method === "POST") return this.logout(res, user, req.sid);
             if (sub === "/auth/change-password" && method === "POST") return this.changePassword(res, user, body());
+            if (sub === "/auth/recovery-code" && method === "POST") return this.newRecoveryCode(res, user, body());
             if (sub === "/branches" && method === "GET") { requireRole(user, "ADMIN"); return this.json(res, 200, c.branches.getAll().map(mapBranch)); }
             if (sub === "/branches" && method === "POST") return this.addBranch(res, user, body());
             if (sub.startsWith("/branches/") && method === "PUT") return this.updateBranch(res, user, tail("/branches/"), body());
@@ -1304,6 +1323,51 @@
             res.setSid = c.sessions.create(user.username).token;
             c.auditLog.log(user, "PASSWORD_CHANGE", "");
             this.json(res, 200, mapSession(c, user));
+        }
+
+        /** "Forgot password?" with the admin's one-time recovery code (ApiHandler.handleRecover). */
+        async recover(res, dto) {
+            const c = this.c;
+            if (dto == null || dto.username == null || dto.recoveryCode == null) throw bad("Username and recovery code are required.");
+            const next = str(dto.newPassword);
+            if (next == null || next.length < 6) throw bad("New password must be at least 6 characters.");
+            const username = str(dto.username);
+            const ip = this.opts.remoteIp || "127.0.0.1";
+            const longest = Math.max(c.rateLimiter.ipLockoutRemaining(ip), c.rateLimiter.lockoutRemaining(username));
+            if (longest !== 0) throw new ApiError(429, "Too many failed attempts. Try again in about " + Math.max(1, toMinutes(longest)) + " minute(s).");
+            const user = c.users.findByUsername(username);
+            const code = c.hasher.normalizeRecoveryCode(str(dto.recoveryCode));
+            const ok = !!user && user.active && user.role === "ADMIN" && user.recoveryHash != null
+                && await c.hasher.verify(code, user.recoveryHash);
+            if (!ok) {
+                if (!user || user.recoveryHash == null) await c.hasher.warmUp(code);
+                c.rateLimiter.recordFailure(username, ip);
+                c.auditLog.logSystem("RECOVERY_FAILED", "username=" + username + " ip=" + ip);
+                throw new ApiError(401, "That recovery code doesn't match this account.");
+            }
+            c.rateLimiter.recordSuccess(user.username);
+            const nextCode = c.hasher.randomRecoveryCode();
+            user.passwordHash = await c.hasher.hash(next);
+            user.mustChangePassword = false;
+            user.recoveryHash = await c.hasher.hash(c.hasher.normalizeRecoveryCode(nextCode));
+            c.users.update(user);
+            c.sessions.invalidateAllFor(user.username);
+            res.setSid = c.sessions.create(user.username).token;
+            c.auditLog.log(user, "PASSWORD_RECOVERED", "recovery code");
+            this.json(res, 200, { session: mapSession(c, user), recoveryCode: nextCode });
+        }
+
+        async newRecoveryCode(res, user, dto) {
+            const c = this.c;
+            requireRole(user, "ADMIN");
+            if (dto == null || dto.currentPassword == null || !(await c.hasher.verify(str(dto.currentPassword), user.passwordHash))) {
+                throw bad("Current password is incorrect.");
+            }
+            const code = c.hasher.randomRecoveryCode();
+            user.recoveryHash = await c.hasher.hash(c.hasher.normalizeRecoveryCode(code));
+            c.users.update(user);
+            c.auditLog.log(user, "RECOVERY_CODE_CREATED", "");
+            this.json(res, 200, { recoveryCode: code });
         }
 
         // ---------------- branches, store, users ----------------
@@ -1962,6 +2026,28 @@
 
         // ---------------- phone integration ----------------
 
+        /**
+         * Phone only - NOT an /api route. "Forgot password?" for an admin after the phone's own
+         * fingerprint / screen-lock check passed in bridge.js (the check is the proof, so it can only
+         * be reached from the app's native side). Sets the new password and signs the admin in.
+         */
+        deviceReset(username, newPassword) {
+            const run = this.queue.then(async () => {
+                const c = this.c;
+                if (newPassword == null || String(newPassword).length < 6) throw bad("New password must be at least 6 characters.");
+                const user = c.users.findByUsername(username);
+                if (!user || !user.active || user.role !== "ADMIN") throw bad("Only the shop owner's account can be reset this way.");
+                user.passwordHash = await c.hasher.hash(String(newPassword));
+                user.mustChangePassword = false;
+                c.users.update(user);
+                c.sessions.invalidateAllFor(user.username);
+                const token = c.sessions.create(user.username).token;
+                c.auditLog.log(user, "PASSWORD_RECOVERED", "phone screen lock");
+                return { sid: token, session: JSON.parse(JSON.stringify(mapSession(c, user), (k, v) => (v === null ? undefined : v))) };
+            });
+            this.queue = run.catch(() => {});   // a refused reset must not jam later requests
+            return run;
+        }
         /** What to save after a request: null when nothing changed. */
         takeChanges() {
             const dbDirty = this.c.db.dirty;

@@ -14,6 +14,8 @@ public class User {
     private String branchId;
     private boolean active;
     private boolean mustChangePassword;
+    /** PBKDF2 hash of the account's one-time recovery code (admins only), or null if none was set up. */
+    private String recoveryHash;
 
     public User(String username, String passwordHash, String fullName, Role role,
                 String branchId, boolean active, boolean mustChangePassword) {
@@ -80,6 +82,14 @@ public class User {
 
     public void setMustChangePassword(boolean mustChangePassword) {
         this.mustChangePassword = mustChangePassword;
+    }
+
+    public String getRecoveryHash() {
+        return recoveryHash;
+    }
+
+    public void setRecoveryHash(String recoveryHash) {
+        this.recoveryHash = recoveryHash;
     }
 
     /** Whether this user may act on the given branch (ADMIN: any branch; others: only their own). */

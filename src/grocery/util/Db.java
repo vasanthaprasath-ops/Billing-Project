@@ -123,6 +123,8 @@ public final class Db {
                     "branchId TEXT REFERENCES branches(id), " +
                     "active INTEGER NOT NULL DEFAULT 1, " +
                     "mustChangePassword INTEGER NOT NULL DEFAULT 0)");
+            // Hash of the admin's one-time recovery code ("Forgot password?"); NULL = none set up.
+            addColumnIfMissing(st, "users", "recoveryHash", "TEXT");
 
             st.execute("CREATE TABLE IF NOT EXISTS invoices (" +
                     "invoiceNo TEXT PRIMARY KEY, " +

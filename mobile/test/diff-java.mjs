@@ -102,7 +102,8 @@ async function startJs() {
 const DT = /\b\d{2}-\d{2}-\d{4} \d{2}:\d{2}(:\d{2})?\b/g;
 function normalise(value) {
     if (typeof value === "string") {
-        return value.replace(DT, "<datetime>").replace(/ref: [0-9a-z-]+/gi, "ref: <id>");
+        return value.replace(DT, "<datetime>").replace(/ref: [0-9a-z-]+/gi, "ref: <id>")
+            .replace(/^[A-HJ-NP-Z2-9]{4}(-[A-HJ-NP-Z2-9]{4}){3}$/, "<recovery code>");
     }
     if (Array.isArray(value)) return value.map(normalise);
     if (value && typeof value === "object") {
@@ -295,6 +296,21 @@ function scenario(t) {
         ["z report br1", "manager1", "GET", `/api/reports/z?date=${D}`],
         ["z report yesterday", "cash1", "GET", `/api/reports/z?date=${y}`],
         ["z report bad date", "cash2", "GET", "/api/reports/z?date=today"],
+        // --- forgot username / forgot password
+        ["accounts (public)", null, "GET", "/api/auth/accounts"],
+        ["me: no recovery code yet", "admin", "GET", "/api/auth/me"],
+        ["recovery code: wrong password", "admin", "POST", "/api/auth/recovery-code", { currentPassword: "nope" }],
+        ["recovery code: cashier refused", "cash1", "POST", "/api/auth/recovery-code", { currentPassword: "Cashier@1" }],
+        ["recovery code", "admin", "POST", "/api/auth/recovery-code", { currentPassword: "Admin@123" }],
+        ["me: has recovery code", "admin", "GET", "/api/auth/me"],
+        ["recover: missing fields", null, "POST", "/api/auth/recover", { username: "admin" }],
+        ["recover: short password", null, "POST", "/api/auth/recover", { username: "admin", recoveryCode: "x", newPassword: "1" }],
+        ["recover: wrong code", null, "POST", "/api/auth/recover", { username: "admin", recoveryCode: "AAAA-AAAA-AAAA-AAAA", newPassword: "Whatever1" }],
+        ["recover: staff have no code", null, "POST", "/api/auth/recover", { username: "manager1", recoveryCode: "__RC__", newPassword: "Whatever1" }],
+        ["recover: unknown user", null, "POST", "/api/auth/recover", { username: "ghost", recoveryCode: "__RC__", newPassword: "Whatever1" }],
+        ["recover ok (lowercase, no dashes)", "admin", "POST", "/api/auth/recover", { username: "ADMIN", recoveryCode: "__RC_LOOSE__", newPassword: "Admin@123" }, "admin"],
+        ["recover: old code used up", null, "POST", "/api/auth/recover", { username: "admin", recoveryCode: "__RC_OLD__", newPassword: "Whatever1" }],
+        ["me after recover", "admin", "GET", "/api/auth/me"],
         // --- password reset, lockout, logout
         ["admin resets cashier pw", "admin", "PUT", "/api/users/cash1", { fullName: "Ravi K", role: "CASHIER", branchId: "BR-001", active: true, password: "reset99" }],
         ["reset user old session", "cash1", "GET", "/api/items"],
@@ -325,16 +341,36 @@ const bin = compileJava();
 const java = await startJava(bin);
 const js = await startJs();
 const sessions = { java: {}, js: {} };
+const codes = { java: [], js: [] };   // recovery codes each side issued, newest last
+const fillCodes = (v, side) => {
+    if (typeof v === "string") {
+        const list = codes[side];
+        if (v === "__RC__") return list[list.length - 1] || "";
+        if (v === "__RC_LOOSE__") return (list[list.length - 1] || "").toLowerCase().replace(/-/g, "");
+        if (v === "__RC_OLD__") return list[list.length - 2] || "";
+        return v;
+    }
+    if (v && typeof v === "object" && !(v instanceof Uint8Array)) {
+        const o = Array.isArray(v) ? [] : {};
+        for (const k of Object.keys(v)) o[k] = fillCodes(v[k], side);
+        return o;
+    }
+    return v;
+};
 let failures = 0, count = 0;
 try {
     const steps = scenario({ bootstrap: "__BOOTSTRAP__" });
     for (const [label, who, method, path, body, keepSessionFor] of steps) {
         count++;
         const run = async (side, impl) => {
-            let b = body;
+            let b = fillCodes(body, side);
             if (b && b.password === "__BOOTSTRAP__") b = { ...b, password: impl.password };
             const res = await impl.call(method, path, b, who ? sessions[side][who] : undefined);
             if (keepSessionFor && res.setSid) sessions[side][keepSessionFor] = res.setSid;
+            try {
+                const j = JSON.parse(new TextDecoder().decode(res.raw));
+                if (j && j.recoveryCode) codes[side].push(j.recoveryCode);
+            } catch (e) { /* not JSON */ }
             return res;
         };
         const a = await run("java", java);

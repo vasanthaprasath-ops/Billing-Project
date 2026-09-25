@@ -247,6 +247,12 @@ public final class Dtos {
         public String password;
     }
 
+    public static class RecoverRequestDto {
+        public String username;
+        public String recoveryCode;
+        public String newPassword;
+    }
+
     public static class ChangePasswordDto {
         public String currentPassword;
         public String newPassword;
@@ -264,6 +270,8 @@ public final class Dtos {
         public String branchPhone;
         public String branchGstin;
         public boolean mustChangePassword;
+        /** Whether this account has a recovery code for "Forgot password?" (only admins get one). */
+        public boolean hasRecoveryCode;
     }
 
     /**
